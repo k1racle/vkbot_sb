@@ -1,0 +1,25 @@
+services:
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:2.15.1
+    container_name: nginx-proxy-manager
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+    environment:
+      TZ: Europe/Moscow
+      DISABLE_IPV6: "true"
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+    networks:
+      - proxy
+
+volumes:
+  npm_data:
+  npm_letsencrypt:
+
+networks:
+  proxy:
+    external: true
