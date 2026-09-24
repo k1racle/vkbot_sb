@@ -2,7 +2,21 @@ services:
   vk-bot:
     build: .
     restart: unless-stopped
-    env_file: .env
+    environment:
+      VK_API_VERSION: ${VK_API_VERSION}
+      VK_GROUP_ID: ${VK_GROUP_ID}
+      VK_GROUP_TOKEN: ${VK_GROUP_TOKEN}
+      VK_CALLBACK_SECRET: ${VK_CALLBACK_SECRET}
+      VK_CONFIRMATION_CODE: ${VK_CONFIRMATION_CODE}
+      DATABASE_URL: ${DATABASE_URL}
+      PROMO_CODE: ${PROMO_CODE}
+      SHOP_URL: ${SHOP_URL}
+      PROMO_MESSAGE: ${PROMO_MESSAGE}
+      ALLOWED_POST_IDS: ${ALLOWED_POST_IDS}
+      LOG_LEVEL: ${LOG_LEVEL}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
     depends_on:
       postgres:
         condition: service_healthy
