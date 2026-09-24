@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — VK Promo Bot</title>
+  <style>
+    :root{font-family:Inter,Arial,sans-serif;color:#172033;background:#f4f7fb}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center}.box{width:min(410px,calc(100% - 32px));background:#fff;border:1px solid #e4e9f1;border-radius:18px;padding:30px;box-shadow:0 12px 35px #17203312}h1{margin:0 0 8px;font-size:23px}p{color:#6c7890;font-size:14px;margin:0 0 24px}label{display:block;font-weight:650;font-size:14px;margin:15px 0 7px}input{width:100%;border:1px solid #ccd5e3;border-radius:10px;padding:12px;font:inherit}button{width:100%;border:0;border-radius:10px;padding:13px;background:#2878f0;color:#fff;font-weight:700;cursor:pointer;margin-top:22px}.error{background:#fde8e8;color:#a63232;border-radius:9px;padding:10px;font-size:13px}
+  </style>
+</head>
+<body><main class="box"><h1>VK Promo Bot</h1><p>Вход в панель управления</p>{% if error %}<div class="error">{{ error }}</div>{% endif %}<form method="post" action="/login"><label>Логин</label><input name="username" autocomplete="username" required><label>Пароль</label><input name="password" type="password" autocomplete="current-password" required><button type="submit">Войти</button></form></main></body>
+</html>

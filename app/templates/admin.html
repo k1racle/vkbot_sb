@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VK Promo Bot — панель</title>
+  <style>
+    :root{font-family:Inter,Arial,sans-serif;color:#172033;background:#f4f7fb}*{box-sizing:border-box}body{margin:0}.top{background:#172033;color:#fff;padding:22px 5%;display:flex;justify-content:space-between;align-items:center}.top h1{font-size:20px;margin:0}.wrap{max-width:1180px;margin:30px auto;padding:0 20px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}.card,.panel{background:#fff;border:1px solid #e4e9f1;border-radius:16px;padding:20px;box-shadow:0 8px 25px #1720330a}.stat-number{font-size:30px;font-weight:750;margin-top:8px}.muted{color:#6c7890;font-size:13px}.grid{display:grid;grid-template-columns:1.2fr .8fr;gap:20px}label{display:block;font-weight:650;font-size:14px;margin:15px 0 7px}input,textarea{width:100%;border:1px solid #ccd5e3;border-radius:10px;padding:11px 12px;font:inherit}textarea{min-height:160px;resize:vertical}.hint{font-size:12px;color:#758197;margin-top:6px}button{border:0;border-radius:10px;padding:12px 17px;background:#2878f0;color:#fff;font-weight:700;cursor:pointer;margin-top:18px}button:hover{background:#1b62ce}.table-wrap{overflow:auto}.events{width:100%;border-collapse:collapse;font-size:13px}.events th,.events td{text-align:left;padding:11px 8px;border-bottom:1px solid #edf0f5;white-space:nowrap}.badge{padding:4px 8px;border-radius:99px;background:#e8eef9}.sent{color:#13824b;background:#e3f7ed}.failed{color:#a63232;background:#fde8e8}@media(max-width:800px){.grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.stats .card:last-child{grid-column:span 2}}
+  </style>
+</head>
+<body>
+  <header class="top"><h1>VK Promo Bot</h1><form method="post" action="/logout"><button type="submit" style="margin:0;background:#33415b">Выйти</button></form></header>
+  <main class="wrap">
+    <section class="stats">
+      <div class="card"><div class="muted">Всего комментариев</div><div class="stat-number">{{ stats.total }}</div></div>
+      <div class="card"><div class="muted">Сообщений отправлено</div><div class="stat-number">{{ stats.sent }}</div></div>
+      <div class="card"><div class="muted">Ошибок отправки</div><div class="stat-number">{{ stats.failed }}</div></div>
+    </section>
+    <section class="grid">
+      <form class="panel" method="post" action="/admin/settings">
+        <h2>Настройки кампании</h2>
+        <p class="muted">Изменения применяются сразу, перезапуск бота не нужен.</p>
+        <label>Промокод</label><input name="promo_code" value="{{ form.promo_code }}" required>
+        <label>Ссылка на магазин</label><input name="shop_url" type="url" value="{{ form.shop_url }}" required>
+        <label>Текст сообщения</label><textarea name="promo_message" required>{{ form.promo_message }}</textarea>
+        <div class="hint">Доступные переменные: {promo_code}, {shop_url}</div>
+        <label>ID постов</label><input name="allowed_post_ids" value="{{ form.allowed_post_ids }}" placeholder="Пусто — все посты">
+        <div class="hint">Несколько ID указываются через запятую.</div>
+        <button type="submit">Сохранить настройки</button>
+      </form>
+      <section class="panel"><h2>Как это работает</h2><p class="muted">Бот получает новый комментарий, проверяет подписку на сообщество и отправляет промокод в личные сообщения.</p><p class="muted">Если пользователь не разрешил сообщения от сообщества, VK вернёт ошибку — она появится в журнале.</p><h3>Следующий этап</h3><p class="muted">Добавим кампании для разных постов, тестовую отправку и расширенную статистику.</p></section>
+    </section>
+    <section class="panel" style="margin-top:20px"><h2>Последние события</h2><div class="table-wrap"><table class="events"><tr><th>Комментарий</th><th>Пост</th><th>Пользователь</th><th>Статус</th><th>Ошибка</th></tr>{% for event in recent %}<tr><td>{{ event.comment_id }}</td><td>{{ event.post_id }}</td><td>{{ event.user_id }}</td><td><span class="badge {{ event.status }}">{{ event.status }}</span></td><td>{{ event.error or '' }}</td></tr>{% else %}<tr><td colspan="5" class="muted">Событий пока нет</td></tr>{% endfor %}</table></div></section>
+  </main>
+</body>
+</html>
