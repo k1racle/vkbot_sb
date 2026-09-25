@@ -27,6 +27,7 @@ services:
       - bot_data:/app/data
     networks:
       - proxy
+      - backend
 
   postgres:
     image: postgres:16-alpine
@@ -42,6 +43,8 @@ services:
       retries: 10
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
 
 volumes:
   bot_data:
@@ -50,3 +53,5 @@ volumes:
 networks:
   proxy:
     external: true
+  backend:
+    driver: bridge
