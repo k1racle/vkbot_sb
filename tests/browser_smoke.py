@@ -120,6 +120,20 @@ def main():
         page.locator("#page-notice").get_by_text(
             "Кампания сохранена.", exact=True
         ).wait_for()
+        page.goto("http://127.0.0.1:8765/admin?section=campaigns&new_campaign=1")
+        page.locator('[name="title"]').fill("Общая акция — все публикации")
+        assert page.locator('[name="post_id"]').input_value() == ""
+        assert not page.locator('[name="post_id"]').evaluate("el => el.required")
+        page.locator('[name="promo_code"]').fill("ALL10")
+        page.locator('[name="shop_url"]').fill("https://sarkisianbrand.ru/")
+        page.locator('[name="promo_message"]').fill("Ваш промокод: {promo_code}")
+        page.get_by_role("button", name="Сохранить кампанию", exact=True).click()
+        page.wait_for_url("**campaign_saved=1**")
+        page.locator(".campaign-item.selected small").get_by_text(
+            "Все публикации", exact=True
+        ).wait_for()
+        assert page.locator('[name="post_id"]').input_value() == ""
+        page.screenshot(path=str(output / "general-campaign.png"), full_page=True)
         for section in ("chat", "settings", "stats", "clients"):
             page.goto("http://127.0.0.1:8765/admin?section=" + section)
             assert page.locator("h1").count() == 1

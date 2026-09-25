@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import secrets
 from pathlib import Path
@@ -9,8 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy import text as sql_text
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.sessions import SessionMiddleware
 
+from .comments import Comment, normalize_comment
 from .config import get_settings
 from .db import (
     Campaign,
@@ -184,7 +187,7 @@ async def admin_page(
     }
     campaign_form = {
         "id": selected_campaign.id if selected_campaign else "",
-        "post_id": selected_campaign.post_id if selected_campaign else "",
+        "post_id": (selected_campaign.post_id or "") if selected_campaign else "",
         "title": selected_campaign.title if selected_campaign else "",
         "promo_code": selected_campaign.promo_code if selected_campaign else "",
         "shop_url": selected_campaign.shop_url if selected_campaign else "",
@@ -280,7 +283,7 @@ async def update_chat_settings(
 @app.post("/admin/campaigns")
 async def save_campaign(
     request: Request,
-    post_id: int = Form(...),
+    post_id: str = Form(""),
     title: str = Form(""),
     promo_code: str = Form(...),
     shop_url: str = Form(...),
@@ -295,6 +298,17 @@ async def save_campaign(
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    entered_post_id = post_id.strip()
+    if entered_post_id and (
+        not entered_post_id.isascii()
+        or not entered_post_id.isdigit()
+        or len(entered_post_id) > 10
+        or not 0 < int(entered_post_id) <= 2147483647
+    ):
+        return RedirectResponse(
+            "/admin?section=campaigns&campaign_error=post_id", status_code=303
+        )
+    post_id = int(entered_post_id) if entered_post_id else 0
     with SessionLocal() as session:
         campaign = (
             session.get(Campaign, int(campaign_id)) if campaign_id.isdigit() else None
@@ -302,14 +316,18 @@ async def save_campaign(
         duplicate = session.query(Campaign).filter_by(post_id=post_id).first()
         if duplicate and (not campaign or duplicate.id != campaign.id):
             return RedirectResponse(
-                "/admin?section=campaigns&campaign_error=duplicate", status_code=303
+                "/admin?section=campaigns&campaign_error="
+                + ("duplicate" if post_id else "duplicate_general"),
+                status_code=303,
             )
         if campaign is None:
             campaign = Campaign(post_id=post_id)
             session.add(campaign)
         old_path = campaign.attachment_path
         campaign.post_id = post_id
-        campaign.title = title.strip() or f"Пост {post_id}"
+        campaign.title = title.strip() or (
+            f"Пост {post_id}" if post_id else "Все публикации"
+        )
         campaign.promo_code = promo_code.strip()
         campaign.shop_url = shop_url.strip()
         campaign.promo_message = promo_message
@@ -351,7 +369,15 @@ async def save_campaign(
             campaign.attachment_path = str(path)
             campaign.attachment_name = attachment.filename
             campaign.attachment_type = attachment.content_type
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            return RedirectResponse(
+                "/admin?section=campaigns&campaign_error="
+                + ("duplicate" if post_id else "duplicate_general"),
+                status_code=303,
+            )
     if ((attachment and attachment.filename) or remove_attachment) and old_path:
         Path(old_path).unlink(missing_ok=True)
     return RedirectResponse(
@@ -470,45 +496,56 @@ async def vk_callback(request: Request) -> str:
     if payload.get("type") == "message_reply":
         await handle_operator_reply(payload)
         return "ok"
-    if payload.get("type") != "wall_reply_new":
+    comment = normalize_comment(payload, settings.vk_group_id)
+    if comment is None:
         return "ok"
-
-    obj = payload.get("object") or {}
-    user_id = int(obj.get("from_id", 0))
-    if user_id <= 0:
-        return "ok"
+    user_id = comment.user_id
     async with user_lock(user_id), CALLBACK_SLOTS:
         with SessionLocal() as guard:
             if guard.bind.dialect.name == "postgresql":
                 guard.execute(
                     sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": user_id}
                 )
-            return await process_comment(obj)
+            return await process_comment(comment)
 
 
-async def process_comment(obj: dict) -> str:
-    comment_id = int(obj.get("id", 0))
-    post_id = int(obj.get("post_id", 0))
-    user_id = int(obj.get("from_id", 0))
-    comment_text = str(obj.get("text", "")).strip()
-    if not comment_id or user_id <= 0:
-        return "ok"
+async def process_comment(comment: Comment) -> str:
+    comment_id, post_id, user_id = (
+        comment.comment_id,
+        comment.object_id,
+        comment.user_id,
+    )
+    comment_text, event_key = comment.text, comment.event_key
     with SessionLocal() as session:
         values = read_settings(session)
-        campaign = session.query(Campaign).filter_by(post_id=post_id).first()
-        if already_processed(session, comment_id):
+        campaign = None
+        if comment.source_type == "wall":
+            campaign = session.query(Campaign).filter_by(post_id=post_id).first()
+        # A disabled dedicated campaign is an explicit exclusion, not an invitation
+        # to issue another campaign's promo. Videos only use the general campaign.
+        if campaign is None:
+            campaign = session.query(Campaign).filter_by(post_id=0).first()
+        if already_processed(session, event_key):
             return "ok"
         session.add(
-            ProcessedComment(comment_id=comment_id, post_id=post_id, user_id=user_id)
+            ProcessedComment(
+                event_key=event_key,
+                source_type=comment.source_type,
+                owner_id=comment.owner_id,
+                comment_id=comment_id,
+                post_id=post_id,
+                user_id=user_id,
+                campaign_id=campaign.id if campaign else None,
+            )
         )
         session.commit()
 
     try:
         if campaign is None:
-            update_status(comment_id, "no_campaign")
+            update_status(event_key, "no_campaign")
             return "ok"
         if campaign is not None and not campaign.enabled:
-            update_status(comment_id, "campaign_disabled")
+            update_status(event_key, "campaign_disabled")
             return "ok"
         test_enabled = as_bool(setting(values, "test_mode", settings.test_mode))
         test_phrase = (
@@ -517,12 +554,12 @@ async def process_comment(obj: dict) -> str:
             .casefold()
         )
         if test_enabled and test_phrase not in comment_text.casefold():
-            update_status(comment_id, "test_filtered")
+            update_status(event_key, "test_filtered")
             return "ok"
 
         min_length = campaign.min_comment_length
         if len(comment_text) < min_length:
-            update_status(comment_id, "too_short")
+            update_status(event_key, "too_short")
             return "ok"
 
         configured_stop_words = campaign.stop_words
@@ -532,18 +569,18 @@ async def process_comment(obj: dict) -> str:
             if word.strip()
         ]
         if any(word in comment_text.casefold() for word in stop_words):
-            update_status(comment_id, "stop_word")
+            update_status(event_key, "stop_word")
             return "ok"
 
         one_promo_per_user = campaign.one_promo_per_user
         if one_promo_per_user:
             with SessionLocal() as session:
                 if delivered(session, user_id, campaign):
-                    update_status(comment_id, "already_sent")
+                    update_status(event_key, "already_sent")
                     return "ok"
 
         if not await is_group_member(user_id):
-            update_status(comment_id, "not_member")
+            update_status(event_key, "not_member")
             return "ok"
 
         template = campaign.promo_message
@@ -566,24 +603,31 @@ async def process_comment(obj: dict) -> str:
                 campaign.attachment_name,
                 campaign.attachment_type,
             )
-        await send_message(user_id, text, random_id=comment_id, attachment=attachments)
-        update_status(comment_id, "sent")
-        logger.info("Promo sent: comment=%s user=%s", comment_id, user_id)
+        random_id = (
+            int.from_bytes(
+                hashlib.sha256(f"comment:{event_key}:{user_id}".encode()).digest()[:4],
+                "big",
+            )
+            & 0x7FFFFFFF
+        )
+        await send_message(
+            user_id, text, random_id=random_id or 1, attachment=attachments
+        )
+        update_status(event_key, "sent")
+        logger.info("Promo sent: event=%s user=%s", event_key, user_id)
     except VkApiError as error:
-        update_status(comment_id, "failed", str(error))
+        update_status(event_key, "failed", str(error))
         logger.warning("VK rejected message for user %s: %s", user_id, error)
     except Exception as error:
-        update_status(comment_id, "failed", str(error))
-        logger.exception("Failed to process comment %s", comment_id)
+        update_status(event_key, "failed", str(error))
+        logger.exception("Failed to process comment %s", event_key)
 
     return "ok"
 
 
-def update_status(comment_id: int, status: str, error: str | None = None) -> None:
+def update_status(event_key: str, status: str, error: str | None = None) -> None:
     with SessionLocal() as session:
-        record = (
-            session.query(ProcessedComment).filter_by(comment_id=comment_id).first()
-        )
+        record = session.query(ProcessedComment).filter_by(event_key=event_key).first()
         if record:
             record.status = status
             record.error = error

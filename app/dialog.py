@@ -72,7 +72,7 @@ def delivered(session, user_id, campaign):
         .first()
         is not None
         or session.query(ProcessedComment)
-        .filter_by(user_id=user_id, post_id=campaign.post_id, status="sent")
+        .filter_by(user_id=user_id, campaign_id=campaign.id, status="sent")
         .first()
         is not None
     )

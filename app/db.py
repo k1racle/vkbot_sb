@@ -22,12 +22,19 @@ class Base(DeclarativeBase):
 
 
 class ProcessedComment(Base):
-    __tablename__ = "processed_comments"
+    # A new table avoids destructively rebuilding the old globally-unique
+    # comment_id column: wall and video comments can have the same numeric ID.
+    __tablename__ = "comment_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    comment_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True)
+    source_type: Mapped[str] = mapped_column(String(16), default="wall")
+    owner_id: Mapped[int] = mapped_column(BigInteger)
+    comment_id: Mapped[int] = mapped_column(Integer, index=True)
+    # VK post_id for wall events, video_id for video events.
     post_id: Mapped[int] = mapped_column(Integer, index=True)
     user_id: Mapped[int] = mapped_column(Integer, index=True)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="received")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
@@ -44,7 +51,8 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    post_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    # 0 means the single fallback campaign. Existing positive IDs stay unchanged.
+    post_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, default=0)
     title: Mapped[str] = mapped_column(String(120), default="")
     promo_code: Mapped[str] = mapped_column(String(120), default="")
     shop_url: Mapped[str] = mapped_column(String(500), default="")
@@ -177,11 +185,31 @@ def init_db() -> None:
                     connection.execute(
                         text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                     )
+    if "processed_comments" in inspect(engine).get_table_names():
+        # Preserve the old table as an archive. Copy records and delivery history
+        # once per event, with the same identity the new callback handler uses.
+        with engine.begin() as connection:
+            connection.execute(
+                text("""
+                INSERT INTO comment_events
+                    (event_key, source_type, owner_id, comment_id, post_id, user_id,
+                     campaign_id, status, error, created_at)
+                SELECT 'wall:' || CAST(:owner AS TEXT) || ':' || CAST(p.post_id AS TEXT)
+                              || ':' || CAST(p.comment_id AS TEXT),
+                       'wall', :owner, p.comment_id, p.post_id, p.user_id,
+                       c.id, p.status, p.error, p.created_at
+                FROM processed_comments p
+                LEFT JOIN campaigns c ON c.post_id = p.post_id
+                WHERE 1=1
+                ON CONFLICT (event_key) DO NOTHING
+            """),
+                {"owner": -get_settings().vk_group_id},
+            )
 
 
-def already_processed(session: Session, comment_id: int) -> bool:
+def already_processed(session: Session, event_key: str) -> bool:
     return (
-        session.query(ProcessedComment).filter_by(comment_id=comment_id).first()
+        session.query(ProcessedComment).filter_by(event_key=event_key).first()
         is not None
     )
 

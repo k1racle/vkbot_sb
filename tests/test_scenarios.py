@@ -474,6 +474,7 @@ def test_comment_promo_is_scoped_to_campaign_and_shared_with_dialog(setup, monke
         return {
             "secret": "test-secret",
             "type": "wall_reply_new",
+            "group_id": 123,
             "object": {"id": ident, "post_id": post, "from_id": 77, "text": "хорошо"},
         }
 
@@ -519,6 +520,7 @@ def test_parallel_comments_do_not_send_twice(setup, monkeypatch):
             request.json.return_value = {
                 "type": "wall_reply_new",
                 "secret": "test-secret",
+                "group_id": 123,
                 "object": {
                     "id": number,
                     "post_id": 1,
