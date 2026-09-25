@@ -32,6 +32,7 @@ from .dialog import (
     user_lock,
 )
 from .flows import render
+from .gifts import DEFAULT_INVITATIONS, invite_to_chat
 from .operators import parse_operator_ids
 from .scenario_api import router as scenario_router
 from .vk_api import (
@@ -142,7 +143,7 @@ async def admin_page(
         )
         failed = (
             session.query(func.count(ProcessedComment.id))
-            .filter_by(status="failed")
+            .filter(ProcessedComment.status.in_(["failed", "gift_failed"]))
             .scalar()
             or 0
         )
@@ -193,6 +194,13 @@ async def admin_page(
         "shop_url": selected_campaign.shop_url if selected_campaign else "",
         "promo_message": selected_campaign.promo_message if selected_campaign else "",
         "enabled": selected_campaign.enabled if selected_campaign else True,
+        "delivery_mode": selected_campaign.delivery_mode
+        if selected_campaign
+        else "direct",
+        "public_reply_variants": (
+            selected_campaign.public_reply_variants if selected_campaign else None
+        )
+        or DEFAULT_INVITATIONS,
         "attachment_name": selected_campaign.attachment_name
         if selected_campaign
         else "",
@@ -292,12 +300,36 @@ async def save_campaign(
     stop_words: str = Form(""),
     min_comment_length: int = Form(1),
     one_promo_per_user: str | None = Form(None),
+    delivery_mode: str = Form("direct"),
+    public_reply_variants: list[str] | None = Form(None),
     attachment: UploadFile | None = File(None),
     campaign_id: str = Form(""),
     remove_attachment: str | None = Form(None),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    variants = (
+        [value.strip() for value in public_reply_variants if value.strip()]
+        if public_reply_variants is not None
+        else list(DEFAULT_INVITATIONS)
+    )
+    if (
+        delivery_mode not in {"direct", "chat_invite"}
+        or (
+            delivery_mode == "chat_invite"
+            and (
+                not 1 <= len(variants) <= 10
+                or any(
+                    len(value) > 2000 or "{chat_url}" not in value for value in variants
+                )
+            )
+        )
+        or len(variants) > 10
+        or any(len(value) > 2000 for value in variants)
+    ):
+        return RedirectResponse(
+            "/admin?section=campaigns&campaign_error=invitation", status_code=303
+        )
     entered_post_id = post_id.strip()
     if entered_post_id and (
         not entered_post_id.isascii()
@@ -334,6 +366,8 @@ async def save_campaign(
         campaign.stop_words = stop_words.strip()
         campaign.min_comment_length = max(0, min_comment_length)
         campaign.one_promo_per_user = bool(one_promo_per_user)
+        campaign.delivery_mode = delivery_mode
+        campaign.public_reply_variants = variants
         campaign.enabled = bool(enabled)
         if remove_attachment:
             campaign.attachment_path = campaign.attachment_name = (
@@ -581,6 +615,11 @@ async def process_comment(comment: Comment) -> str:
 
         if not await is_group_member(user_id):
             update_status(event_key, "not_member")
+            return "ok"
+
+        if campaign.delivery_mode == "chat_invite":
+            with SessionLocal() as session:
+                await invite_to_chat(session, comment, campaign)
             return "ok"
 
         template = campaign.promo_message

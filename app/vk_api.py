@@ -37,6 +37,22 @@ async def get_user_name(user_id: int) -> str:
     return "друг"
 
 
+async def reply_to_wall_comment(comment, message: str, guid: str) -> None:
+    # video.createComment does not accept community tokens. Never silently post
+    # to a wall with a video's numeric ID instead.
+    if comment.source_type != "wall":
+        raise ValueError("Приглашения доступны только для комментариев к постам")
+    await call(
+        "wall.createComment",
+        owner_id=comment.owner_id,
+        post_id=comment.object_id,
+        reply_to_comment=comment.comment_id,
+        from_group=get_settings().vk_group_id,
+        message=message,
+        guid=guid,
+    )
+
+
 async def send_message(
     user_id: int,
     text: str,

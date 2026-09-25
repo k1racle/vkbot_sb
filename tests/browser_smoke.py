@@ -134,6 +134,49 @@ def main():
         ).wait_for()
         assert page.locator('[name="post_id"]').input_value() == ""
         page.screenshot(path=str(output / "general-campaign.png"), full_page=True)
+        # Configure public invitations without sending any VK comments/messages.
+        page.locator("#delivery-mode").select_option("chat_invite")
+        assert page.locator("#invitation-settings").is_visible()
+        assert page.locator(".invitation-variant").count() == 4
+        first_invitation = page.locator('[name="public_reply_variants"]').first
+        first_invitation.fill("Здесь забыли ссылку")
+        assert not first_invitation.evaluate("el => el.checkValidity()")
+        page.locator("#delivery-mode").select_option("direct")
+        assert page.locator("#invitation-settings").is_hidden()
+        assert first_invitation.evaluate("el => el.checkValidity()")
+        page.locator("#delivery-mode").select_option("chat_invite")
+        assert first_invitation.input_value() == "Здесь забыли ссылку"
+        page.locator('[name="public_reply_variants"]').first.fill(
+            "Спасибо за активность 💚 Ваш подарок: {chat_url}\nНапишите «Подарок» в чате."
+        )
+        page.locator("#add-invitation").click()
+        assert page.locator(".invitation-variant").count() == 5
+        page.locator("[data-remove-invitation]").last.click()
+        assert page.locator(".invitation-variant").count() == 4
+        for _ in range(6):
+            page.locator("#add-invitation").click()
+        assert page.locator(".invitation-variant").count() == 10
+        assert page.locator("#add-invitation").is_disabled()
+        for _ in range(6):
+            page.locator("[data-remove-invitation]").last.click()
+        assert page.locator(".invitation-variant").count() == 4
+        page.get_by_role("button", name="Сохранить кампанию", exact=True).click()
+        page.wait_for_url("**campaign_saved=1**")
+        page.reload(wait_until="networkidle")
+        assert page.locator("#delivery-mode").input_value() == "chat_invite"
+        assert (
+            "Спасибо за активность"
+            in page.locator('[name="public_reply_variants"]').first.input_value()
+        )
+        page.locator("#delivery-mode").scroll_into_view_if_needed()
+        page.screenshot(path=str(output / "invitations.png"))
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
+            "Invitations overflow on mobile"
+        )
+        page.locator("#invitation-variants").scroll_into_view_if_needed()
+        page.screenshot(path=str(output / "invitations-mobile.png"))
+        page.set_viewport_size({"width": 1536, "height": 1024})
         for section in ("chat", "settings", "stats", "clients"):
             page.goto("http://127.0.0.1:8765/admin?section=" + section)
             assert page.locator("h1").count() == 1

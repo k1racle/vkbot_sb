@@ -63,7 +63,28 @@ class Campaign(Base):
     stop_words: Mapped[str] = mapped_column(Text, default="")
     min_comment_length: Mapped[int] = mapped_column(Integer, default=1)
     one_promo_per_user: Mapped[bool] = mapped_column(default=True)
+    delivery_mode: Mapped[str] = mapped_column(String(24), default="direct")
+    public_reply_variants: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class PendingGift(Base):
+    __tablename__ = "pending_gifts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, index=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True)
+    # At most one outstanding invitation per customer/campaign. Completed rows
+    # retain history, but release this key so repeatable campaigns can issue again.
+    active_key: Mapped[str | None] = mapped_column(
+        String(80), unique=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    invitation_text: Mapped[str] = mapped_column(Text, default="")
+    delivery_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -110,6 +131,7 @@ class DialogEvent(Base):
     text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="processing")
     kind: Mapped[str] = mapped_column(String(32), default="incoming")
+    gift_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
@@ -160,6 +182,8 @@ def init_db() -> None:
             "stop_words": "TEXT DEFAULT ''",
             "min_comment_length": "INTEGER DEFAULT 1",
             "one_promo_per_user": "BOOLEAN DEFAULT TRUE",
+            "delivery_mode": "VARCHAR(24) NOT NULL DEFAULT 'direct'",
+            "public_reply_variants": "JSON NOT NULL DEFAULT '[]'",
         }
         with engine.begin() as connection:
             for column, definition in additions.items():
@@ -176,7 +200,10 @@ def init_db() -> None:
             "handoff_started_at": "BIGINT NOT NULL DEFAULT 0",
             "handoff_message_id": "BIGINT NOT NULL DEFAULT 0",
         },
-        "dialog_events": {"kind": "VARCHAR(32) NOT NULL DEFAULT 'incoming'"},
+        "dialog_events": {
+            "kind": "VARCHAR(32) NOT NULL DEFAULT 'incoming'",
+            "gift_id": "VARCHAR(32)",
+        },
     }.items():
         existing = {column["name"] for column in inspect(engine).get_columns(table)}
         with engine.begin() as connection:

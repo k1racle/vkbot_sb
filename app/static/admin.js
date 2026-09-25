@@ -76,6 +76,7 @@ const failures = {
   size: "Размер файла должен быть не больше 50 МБ.",
   type: "Этот тип файла не поддерживается.",
   empty: "Выберите непустой файл.",
+  invitation: "Добавьте от 1 до 10 приглашений, до 2000 символов каждое. В каждом тексте нужна переменная {chat_url} для ссылки на чат.",
 };
 const notice = document.getElementById("page-notice");
 for (const [key, value] of query) {
@@ -117,6 +118,11 @@ const statusNames = {
   test_filtered: "Тестовый фильтр",
   post_filtered: "Другой пост",
   no_campaign: "Нет кампании",
+  waiting_chat: "Ждём получения в чате",
+  invite_duplicate: "Приглашение уже создано",
+  invite_unsupported: "Нельзя пригласить под видео",
+  gift_unavailable: "Акция недоступна",
+  gift_failed: "Ошибка выдачи в чате",
 };
 document.querySelectorAll("[data-status]").forEach((el) => {
   const original = el.textContent;
@@ -125,8 +131,50 @@ document.querySelectorAll("[data-status]").forEach((el) => {
     statusNames[el.dataset.status] || el.dataset.status,
   );
   if (el.dataset.status === "sent") el.classList.add("live");
-  if (el.dataset.status === "failed") el.classList.add("warning");
+  if (["failed", "gift_failed", "invite_unsupported"].includes(el.dataset.status)) el.classList.add("warning");
 });
+// Each invitation is a separate ordinary form field; the server also validates
+// the count/length/placeholder. Keep unsaved changes when switching delivery mode.
+const deliveryMode = document.getElementById("delivery-mode");
+if (deliveryMode) {
+  const section = document.getElementById("invitation-settings");
+  const variants = document.getElementById("invitation-variants");
+  const add = document.getElementById("add-invitation");
+  const refresh = () => {
+    const cards = [...variants.children];
+    const enabled = deliveryMode.value === "chat_invite";
+    section.hidden = !enabled;
+    cards.forEach((card, i) => {
+      card.querySelector("[data-variant-title]").textContent = `Вариант ${i + 1}`;
+      card.querySelector("[data-variant-label]").textContent = `Текст приглашения ${i + 1}`;
+      card.querySelector("[data-remove-invitation]").disabled = cards.length <= 1;
+      const area = card.querySelector("textarea");
+      area.required = enabled;
+      area.setCustomValidity(enabled && !area.value.includes("{chat_url}")
+        ? "Добавьте {chat_url}, чтобы человек мог перейти в чат." : "");
+    });
+    add.disabled = cards.length >= 10;
+  };
+  deliveryMode.addEventListener("change", refresh);
+  variants.addEventListener("input", refresh);
+  variants.addEventListener("click", (e) => {
+    const button = e.target.closest("[data-remove-invitation]");
+    if (!button || variants.children.length <= 1) return;
+    button.closest(".invitation-variant").remove();
+    formDirty = true;
+    refresh();
+  });
+  add.addEventListener("click", () => {
+    if (variants.children.length >= 10) return;
+    const card = variants.firstElementChild.cloneNode(true);
+    card.querySelector("textarea").value = "Спасибо за комментарий! 🎁 Ваш подарок здесь: {chat_url}\nНажмите «Начать» или напишите «Подарок».";
+    variants.append(card);
+    formDirty = true;
+    refresh();
+    card.querySelector("textarea").focus();
+  });
+  refresh();
+}
 async function loadClients() {
   const list = document.getElementById("clients-list");
   if (!list) return;
@@ -143,7 +191,7 @@ async function loadClients() {
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)
                 .join(
                   "",
-                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
+                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
       : '<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="/admin?section=scenarios">Открыть сценарии</a></div>';

@@ -18,13 +18,13 @@ from .db import (
     Conversation,
     DialogEvent,
     MediaAsset,
-    ProcessedComment,
     PromoDelivery,
     Scenario,
     SessionLocal,
     read_settings,
 )
 from .flows import advance, matches, render
+from .gifts import delivered, handle_gift_request
 from .operators import configured_operators, reset_handoff
 
 logger = logging.getLogger(__name__)
@@ -63,19 +63,6 @@ def lock_conversation(session, user_id):
         session.execute(
             sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": user_id}
         )
-
-
-def delivered(session, user_id, campaign):
-    return (
-        session.query(PromoDelivery)
-        .filter_by(user_id=user_id, campaign_id=campaign.id)
-        .first()
-        is not None
-        or session.query(ProcessedComment)
-        .filter_by(user_id=user_id, campaign_id=campaign.id, status="sent")
-        .first()
-        is not None
-    )
 
 
 class LivePort:
@@ -380,7 +367,8 @@ async def handle_message(payload):
     message = obj.get("message", obj)
     user_id = int(message.get("from_id", 0))
     if (
-        user_id <= 0
+        numeric_id(payload.get("group_id")) != get_settings().vk_group_id
+        or user_id <= 0
         or message.get("out")
         or int(message.get("peer_id", user_id)) != user_id
     ):
@@ -406,6 +394,11 @@ async def handle_message(payload):
             event = session.query(DialogEvent).filter_by(event_key=key).first()
             if event and event.status == "done":
                 return
+            event = event or DialogEvent(event_key=key, user_id=user_id)
+            # Claiming an earned gift is independent of scenarios/chat_enabled.
+            # It does not reset scenario progress or a manager's ownership.
+            if await handle_gift_request(session, event, message, incoming):
+                return
             values = read_settings(session)
             if not truth(values.get("chat_enabled") or get_settings().chat_enabled):
                 return
@@ -414,7 +407,6 @@ async def handle_message(payload):
                 conversation = Conversation(user_id=user_id, variables={})
                 session.add(conversation)
                 session.flush()
-            event = event or DialogEvent(event_key=key, user_id=user_id)
             event.text = str(message.get("text", ""))[:4000]
             session.add(event)
             conversation.variables = dict(
