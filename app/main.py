@@ -20,7 +20,7 @@ from .db import (
     read_settings,
     save_settings,
 )
-from .vk_api import VkApiError, is_group_member, send_message, upload_file_for_message
+from .vk_api import VkApiError, get_user_name, is_group_member, send_message, upload_file_for_message
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -273,7 +273,13 @@ async def test_send(request: Request):
     with SessionLocal() as session:
         values = read_settings(session)
     template = values.get("promo_message", settings.promo_message).replace("\\n", "\n")
-    text = template.format(promo_code=values.get("promo_code", settings.promo_code), shop_url=values.get("shop_url", settings.shop_url))
+    user_name = await get_user_name(user_id)
+    text = template.format(
+        promo_code=values.get("promo_code", settings.promo_code),
+        shop_url=values.get("shop_url", settings.shop_url),
+        user_name=user_name,
+        first_name=user_name,
+    )
     attachment = values.get("promo_attachments", settings.promo_attachments)
     attachment_path = values.get("attachment_path", "")
     if attachment_path and Path(attachment_path).exists():
@@ -354,9 +360,12 @@ async def vk_callback(request: Request) -> str:
             return "ok"
 
         template = (campaign.promo_message if campaign else values.get("promo_message", settings.promo_message)).replace("\\n", "\n")
+        user_name = await get_user_name(user_id)
         text = template.format(
             promo_code=campaign.promo_code if campaign else values.get("promo_code", settings.promo_code),
             shop_url=campaign.shop_url if campaign else values.get("shop_url", settings.shop_url),
+            user_name=user_name,
+            first_name=user_name,
         )
         attachments = values.get("promo_attachments", settings.promo_attachments)
         attachment_path = values.get("attachment_path", "")

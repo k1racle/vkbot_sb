@@ -28,6 +28,13 @@ async def is_group_member(user_id: int) -> bool:
     return bool(result)
 
 
+async def get_user_name(user_id: int) -> str:
+    result = await call("users.get", user_ids=user_id, fields="first_name")
+    if result and result[0].get("first_name"):
+        return result[0]["first_name"]
+    return "друг"
+
+
 async def send_message(user_id: int, text: str, random_id: int, attachment: str = "") -> None:
     params = {"user_id": user_id, "random_id": random_id, "message": text}
     if attachment.strip():
