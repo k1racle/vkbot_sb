@@ -124,9 +124,13 @@ async def admin_page(request: Request, campaign_id: int | None = None, new_campa
         "post_id": selected_campaign.post_id if selected_campaign else "",
         "title": selected_campaign.title if selected_campaign else "",
         "promo_code": selected_campaign.promo_code if selected_campaign else "",
-        "shop_url": selected_campaign.shop_url if selected_campaign else settings.shop_url,
-        "promo_message": selected_campaign.promo_message if selected_campaign else values.get("promo_message", settings.promo_message).replace("\\n", "\n"),
+        "shop_url": selected_campaign.shop_url if selected_campaign else "",
+        "promo_message": selected_campaign.promo_message if selected_campaign else "",
         "enabled": selected_campaign.enabled if selected_campaign else True,
+        "attachment_name": selected_campaign.attachment_name if selected_campaign else "",
+        "stop_words": selected_campaign.stop_words if selected_campaign else "",
+        "min_comment_length": selected_campaign.min_comment_length if selected_campaign else 1,
+        "one_promo_per_user": selected_campaign.one_promo_per_user if selected_campaign else False,
     }
     return templates.TemplateResponse(
         "admin.html",
@@ -137,71 +141,42 @@ async def admin_page(request: Request, campaign_id: int | None = None, new_campa
 @app.post("/admin/settings")
 async def update_admin_settings(
     request: Request,
-    promo_code: str = Form(...),
-    shop_url: str = Form(...),
-    promo_message: str = Form(...),
-    promo_attachments: str = Form(""),
-    allowed_post_ids: str = Form(""),
-    stop_words: str = Form(""),
-    min_comment_length: int = Form(1),
-    one_promo_per_user: str | None = Form(None),
     test_mode: str | None = Form(None),
     test_trigger_phrase: str = Form("тестовое сообщение"),
-    admin_test_user_id: str = Form(""),
+):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    values_to_save = {
+        "test_mode": "true" if test_mode else "false",
+        "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
+    }
+    with SessionLocal() as session:
+        save_settings(session, values_to_save)
+    return RedirectResponse("/admin?section=settings&saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/chat-settings")
+async def update_chat_settings(
+    request: Request,
     chat_enabled: str | None = Form(None),
     chat_greeting: str = Form(""),
     operator_user_id: str = Form(""),
     operator_trigger_words: str = Form(""),
     operator_ack: str = Form(""),
-    attachment: UploadFile | None = File(None),
+    admin_test_user_id: str = Form(""),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-    values_to_save = {
-        "promo_code": promo_code.strip(),
-        "shop_url": shop_url.strip(),
-        "promo_message": promo_message,
-        "promo_attachments": promo_attachments.strip(),
-        "allowed_post_ids": allowed_post_ids.strip(),
-        "stop_words": stop_words.strip(),
-        "min_comment_length": str(max(0, min_comment_length)),
-        "one_promo_per_user": "true" if one_promo_per_user else "false",
-        "test_mode": "true" if test_mode else "false",
-        "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
-        "admin_test_user_id": admin_test_user_id.strip(),
-        "chat_enabled": "true" if chat_enabled else "false",
-        "chat_greeting": chat_greeting.strip() or settings.chat_greeting,
-        "operator_user_id": operator_user_id.strip(),
-        "operator_trigger_words": operator_trigger_words.strip() or settings.operator_trigger_words,
-        "operator_ack": operator_ack.strip() or settings.operator_ack,
-    }
-    if attachment and attachment.filename:
-        if not attachment.content_type:
-            return RedirectResponse("/admin?attachment_error=empty", status_code=status.HTTP_303_SEE_OTHER)
-        allowed = attachment.content_type.startswith(("image/", "video/", "audio/")) or attachment.content_type in {
-            "application/pdf", "application/zip", "application/x-zip-compressed", "text/plain"
-        }
-        if not allowed:
-            return RedirectResponse("/admin?attachment_error=type", status_code=status.HTTP_303_SEE_OTHER)
-        data = await attachment.read()
-        if len(data) > 50 * 1024 * 1024:
-            return RedirectResponse("/admin?attachment_error=size", status_code=status.HTTP_303_SEE_OTHER)
-        path = ATTACHMENT_DIR / f"promo_{uuid4().hex}"
-        path.write_bytes(data)
-        with SessionLocal() as session:
-            old_path = read_settings(session).get("attachment_path")
-            values_to_save.update({
-                "attachment_path": str(path),
-                "attachment_name": attachment.filename,
-                "attachment_type": attachment.content_type,
-            })
-            save_settings(session, values_to_save)
-        if old_path:
-            Path(old_path).unlink(missing_ok=True)
-    else:
-        with SessionLocal() as session:
-            save_settings(session, values_to_save)
-    return RedirectResponse("/admin?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        save_settings(session, {
+            "chat_enabled": "true" if chat_enabled else "false",
+            "chat_greeting": chat_greeting.strip() or settings.chat_greeting,
+            "operator_user_id": operator_user_id.strip(),
+            "operator_trigger_words": operator_trigger_words.strip() or settings.operator_trigger_words,
+            "operator_ack": operator_ack.strip() or settings.operator_ack,
+            "admin_test_user_id": admin_test_user_id.strip(),
+        })
+    return RedirectResponse("/admin?section=chat", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/attachment")
@@ -261,6 +236,10 @@ async def save_campaign(
     shop_url: str = Form(...),
     promo_message: str = Form(...),
     enabled: str | None = Form(None),
+    stop_words: str = Form(""),
+    min_comment_length: int = Form(1),
+    one_promo_per_user: str | None = Form(None),
+    attachment: UploadFile | None = File(None),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -269,13 +248,33 @@ async def save_campaign(
         if campaign is None:
             campaign = Campaign(post_id=post_id)
             session.add(campaign)
+        old_path = campaign.attachment_path
         campaign.title = title.strip() or f"Пост {post_id}"
         campaign.promo_code = promo_code.strip()
         campaign.shop_url = shop_url.strip()
         campaign.promo_message = promo_message
+        campaign.stop_words = stop_words.strip()
+        campaign.min_comment_length = max(0, min_comment_length)
+        campaign.one_promo_per_user = bool(one_promo_per_user)
         campaign.enabled = bool(enabled)
+        if attachment and attachment.filename:
+            if not attachment.content_type:
+                return RedirectResponse("/admin?section=campaigns&attachment_error=empty", status_code=status.HTTP_303_SEE_OTHER)
+            allowed = attachment.content_type.startswith(("image/", "video/", "audio/")) or attachment.content_type in {"application/pdf", "application/zip", "application/x-zip-compressed", "text/plain"}
+            if not allowed:
+                return RedirectResponse("/admin?section=campaigns&attachment_error=type", status_code=status.HTTP_303_SEE_OTHER)
+            data = await attachment.read()
+            if len(data) > 50 * 1024 * 1024:
+                return RedirectResponse("/admin?section=campaigns&attachment_error=size", status_code=status.HTTP_303_SEE_OTHER)
+            path = ATTACHMENT_DIR / f"campaign_{uuid4().hex}"
+            path.write_bytes(data)
+            campaign.attachment_path = str(path)
+            campaign.attachment_name = attachment.filename
+            campaign.attachment_type = attachment.content_type
         session.commit()
-    return RedirectResponse("/admin?campaign_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+    if attachment and attachment.filename and old_path:
+        Path(old_path).unlink(missing_ok=True)
+    return RedirectResponse(f"/admin?section=campaigns&campaign_saved=1&campaign_id={campaign.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.api_route("/admin/campaigns/{campaign_id}/delete", methods=["GET", "POST"])
@@ -287,7 +286,7 @@ async def delete_campaign(request: Request, campaign_id: int):
         if campaign:
             session.delete(campaign)
             session.commit()
-    return RedirectResponse("/admin?campaign_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse("/admin?section=campaigns&campaign_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.api_route("/admin/campaigns/{campaign_id}/toggle", methods=["GET", "POST"])
@@ -299,35 +298,44 @@ async def toggle_campaign(request: Request, campaign_id: int):
         if campaign:
             campaign.enabled = not campaign.enabled
             session.commit()
-    return RedirectResponse("/admin?campaign_toggled=1", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse("/admin?section=campaigns&campaign_toggled=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/admin/test-send")
 async def test_send(request: Request):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    form = await request.form()
+    campaign_id = form.get("campaign_id")
     with SessionLocal() as session:
         values = read_settings(session)
+        campaign = session.get(Campaign, int(campaign_id)) if campaign_id else session.query(Campaign).filter_by(enabled=True).order_by(Campaign.id).first()
     user_id = int(values.get("admin_test_user_id", settings.admin_test_user_id) or 0)
     if user_id <= 0:
         return RedirectResponse("/admin?test_error=no_user", status_code=status.HTTP_303_SEE_OTHER)
-    template = values.get("promo_message", settings.promo_message).replace("\\n", "\n")
+    if campaign is None:
+        return RedirectResponse("/admin?section=campaigns&test_error=no_campaign", status_code=status.HTTP_303_SEE_OTHER)
+    template = campaign.promo_message.replace("\\n", "\n")
     user_name = await get_user_name(user_id)
     text = template.format(
-        promo_code=values.get("promo_code", settings.promo_code),
-        shop_url=values.get("shop_url", settings.shop_url),
+        promo_code=campaign.promo_code,
+        shop_url=campaign.shop_url,
         user_name=user_name,
         first_name=user_name,
     )
-    attachment = values.get("promo_attachments", settings.promo_attachments)
-    attachment_path = values.get("attachment_path", "")
-    if attachment_path and Path(attachment_path).exists():
-        attachment = await upload_file_for_message(user_id, Path(attachment_path), values.get("attachment_name", "attachment"), values.get("attachment_type", "application/octet-stream"))
+    attachment = ""
+    if campaign.attachment_path and Path(campaign.attachment_path).exists():
+        attachment = await upload_file_for_message(
+            user_id,
+            Path(campaign.attachment_path),
+            campaign.attachment_name or "attachment",
+            campaign.attachment_type or "application/octet-stream",
+        )
     try:
         await send_message(user_id, text, random_id=-1, attachment=attachment)
     except VkApiError:
-        return RedirectResponse("/admin?test_error=vk", status_code=status.HTTP_303_SEE_OTHER)
-    return RedirectResponse("/admin?test_sent=1", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse("/admin?section=campaigns&test_error=vk", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(f"/admin?section=campaigns&test_sent=1&campaign_id={campaign.id}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/vk/callback", response_class=PlainTextResponse)
@@ -371,21 +379,23 @@ async def vk_callback(request: Request) -> str:
             update_status(comment_id, "test_filtered")
             return "ok"
 
-        min_length = int(setting(values, "min_comment_length", settings.min_comment_length) or 1)
+        min_length = int(campaign.min_comment_length if campaign else (setting(values, "min_comment_length", settings.min_comment_length) or 1))
         if len(comment_text) < min_length:
             update_status(comment_id, "too_short")
             return "ok"
 
+        configured_stop_words = campaign.stop_words if campaign else setting(values, "stop_words", settings.stop_words)
         stop_words = [
             word.strip().casefold()
-            for word in str(setting(values, "stop_words", settings.stop_words)).replace(",", "\n").splitlines()
+            for word in str(configured_stop_words).replace(",", "\n").splitlines()
             if word.strip()
         ]
         if any(word in comment_text.casefold() for word in stop_words):
             update_status(comment_id, "stop_word")
             return "ok"
 
-        if as_bool(setting(values, "one_promo_per_user", settings.one_promo_per_user)):
+        one_promo_per_user = campaign.one_promo_per_user if campaign else as_bool(setting(values, "one_promo_per_user", settings.one_promo_per_user))
+        if one_promo_per_user:
             with SessionLocal() as session:
                 if already_sent_to_user(session, user_id):
                     update_status(comment_id, "already_sent")
@@ -410,13 +420,13 @@ async def vk_callback(request: Request) -> str:
             first_name=user_name,
         )
         attachments = values.get("promo_attachments", settings.promo_attachments)
-        attachment_path = values.get("attachment_path", "")
+        attachment_path = campaign.attachment_path if campaign else values.get("attachment_path", "")
         if attachment_path and Path(attachment_path).exists():
             attachments = await upload_file_for_message(
                 user_id,
                 Path(attachment_path),
-                values.get("attachment_name", "attachment"),
-                values.get("attachment_type", "application/octet-stream"),
+                campaign.attachment_name if campaign else values.get("attachment_name", "attachment"),
+                campaign.attachment_type if campaign else values.get("attachment_type", "application/octet-stream"),
             )
         await send_message(user_id, text, random_id=comment_id, attachment=attachments)
         update_status(comment_id, "sent")

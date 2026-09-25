@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, func
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -38,6 +38,12 @@ class Campaign(Base):
     promo_code: Mapped[str] = mapped_column(String(120), default="")
     shop_url: Mapped[str] = mapped_column(String(500), default="")
     promo_message: Mapped[str] = mapped_column(Text, default="")
+    attachment_path: Mapped[str] = mapped_column(String(500), default="")
+    attachment_name: Mapped[str] = mapped_column(String(255), default="")
+    attachment_type: Mapped[str] = mapped_column(String(120), default="")
+    stop_words: Mapped[str] = mapped_column(Text, default="")
+    min_comment_length: Mapped[int] = mapped_column(Integer, default=1)
+    one_promo_per_user: Mapped[bool] = mapped_column(default=True)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
@@ -56,6 +62,21 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+    if "campaigns" in inspector.get_table_names():
+        existing = {column["name"] for column in inspector.get_columns("campaigns")}
+        additions = {
+            "attachment_path": "VARCHAR(500) DEFAULT ''",
+            "attachment_name": "VARCHAR(255) DEFAULT ''",
+            "attachment_type": "VARCHAR(120) DEFAULT ''",
+            "stop_words": "TEXT DEFAULT ''",
+            "min_comment_length": "INTEGER DEFAULT 1",
+            "one_promo_per_user": "BOOLEAN DEFAULT TRUE",
+        }
+        with engine.begin() as connection:
+            for column, definition in additions.items():
+                if column not in existing:
+                    connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN {column} {definition}"))
 
 
 def already_processed(session: Session, comment_id: int) -> bool:
