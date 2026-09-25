@@ -15,7 +15,9 @@ from .db import (
     Scenario,
     SessionLocal,
 )
+from .dialog import lock_conversation, user_lock
 from .flows import Graph, advance, render, starter_graph, validate_graph
+from .operators import reset_handoff
 
 
 def authorize(request: Request):
@@ -300,6 +302,8 @@ def conversations():
                 "user_id": c.user_id,
                 "name": c.variables.get("first_name", f"id{c.user_id}"),
                 "handoff": c.handoff,
+                "assigned_operator_id": c.assigned_operator_id,
+                "assigned_at": str(c.assigned_at) if c.assigned_at else None,
                 "node_id": c.node_id,
                 "variables": {
                     k: v for k, v in c.variables.items() if not k.startswith("_")
@@ -308,6 +312,7 @@ def conversations():
                     {
                         "text": e.text,
                         "status": e.status,
+                        "kind": e.kind,
                         "error": e.error,
                         "date": str(e.created_at),
                     }
@@ -322,15 +327,14 @@ def conversations():
 
 
 @router.post("/conversations/{user_id}/resume")
-def resume(user_id: int):
-    with SessionLocal() as session:
-        if session.bind.dialect.name == "postgresql":
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(:key)"), {"key": user_id}
-            )
-        row = session.get(Conversation, user_id)
-        if not row:
-            raise HTTPException(404, "Диалог не найден")
-        row.handoff, row.node_id = False, ""
-        session.commit()
-        return {"ok": True}
+async def resume(user_id: int):
+    async with user_lock(user_id):
+        with SessionLocal() as session:
+            lock_conversation(session, user_id)
+            row = session.get(Conversation, user_id)
+            if not row:
+                raise HTTPException(404, "Диалог не найден")
+            reset_handoff(row)
+            row.node_id = ""
+            session.commit()
+            return {"ok": True}

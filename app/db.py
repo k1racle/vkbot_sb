@@ -2,6 +2,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     DateTime,
     Integer,
     String,
@@ -82,6 +83,11 @@ class Conversation(Base):
     node_id: Mapped[str] = mapped_column(String(64), default="")
     variables: Mapped[dict] = mapped_column(JSON, default=dict)
     handoff: Mapped[bool] = mapped_column(default=False)
+    assigned_operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    assigned_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    handoff_token: Mapped[str] = mapped_column(String(64), default="")
+    handoff_started_at: Mapped[int] = mapped_column(BigInteger, default=0)
+    handoff_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[object] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
@@ -95,6 +101,7 @@ class DialogEvent(Base):
     user_id: Mapped[int] = mapped_column(index=True)
     text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="processing")
+    kind: Mapped[str] = mapped_column(String(32), default="incoming")
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
@@ -151,6 +158,24 @@ def init_db() -> None:
                 if column not in existing:
                     connection.execute(
                         text(f"ALTER TABLE campaigns ADD COLUMN {column} {definition}")
+                    )
+    # Additive upgrade: keep existing dialogs and campaigns intact.
+    for table, additions in {
+        "conversations": {
+            "assigned_operator_id": "BIGINT",
+            "assigned_at": "TIMESTAMP",
+            "handoff_token": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "handoff_started_at": "BIGINT NOT NULL DEFAULT 0",
+            "handoff_message_id": "BIGINT NOT NULL DEFAULT 0",
+        },
+        "dialog_events": {"kind": "VARCHAR(32) NOT NULL DEFAULT 'incoming'"},
+    }.items():
+        existing = {column["name"] for column in inspect(engine).get_columns(table)}
+        with engine.begin() as connection:
+            for column, definition in additions.items():
+                if column not in existing:
+                    connection.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                     )
 
 

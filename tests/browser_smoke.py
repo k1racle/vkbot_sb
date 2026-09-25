@@ -123,6 +123,50 @@ def main():
         for section in ("chat", "settings", "stats", "clients"):
             page.goto("http://127.0.0.1:8765/admin?section=" + section)
             assert page.locator("h1").count() == 1
+        page.goto("http://127.0.0.1:8765/admin?section=chat")
+        page.locator('[name="operator_user_id"]').fill("99, 100\n99")
+        page.get_by_role("button", name="Сохранить настройки", exact=True).click()
+        page.wait_for_url("**saved=1")
+        assert page.locator('[name="operator_user_id"]').input_value() == "99, 100"
+        page.screenshot(path=str(output / "managers.png"), full_page=True)
+        page.locator('[name="operator_user_id"]').fill("99, bad")
+        page.get_by_role("button", name="Сохранить настройки", exact=True).click()
+        page.wait_for_url("**settings_error=operators")
+        page.locator("#page-notice").get_by_text(
+            "Настройки не сохранены.", exact=False
+        ).wait_for()
+        assert page.locator('[name="operator_user_id"]').input_value() == "99, 100"
+        # UI-only fixture: do not send anything to VK or modify real clients.
+        page.route(
+            "**/admin/api/conversations",
+            lambda route: route.fulfill(
+                json=[
+                    {
+                        "user_id": 77,
+                        "name": "Анна",
+                        "handoff": True,
+                        "assigned_operator_id": 99,
+                        "assigned_at": "2026-09-25 12:30:00",
+                        "variables": {"size": "M"},
+                        "events": [
+                            {
+                                "text": "Менеджер id99: Здравствуйте!",
+                                "status": "done",
+                                "kind": "operator_reply",
+                                "date": "2026-09-25 12:30:00",
+                                "error": "",
+                            }
+                        ],
+                    }
+                ]
+            ),
+        )
+        page.goto("http://127.0.0.1:8765/admin?section=clients")
+        page.get_by_text("В работе у менеджера", exact=True).wait_for()
+        page.get_by_role("link", name="id99 ↗").wait_for()
+        page.get_by_text("Ответ менеджера", exact=False).wait_for()
+        page.screenshot(path=str(output / "assigned-client.png"), full_page=True)
+        page.unroute("**/admin/api/conversations")
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto("http://127.0.0.1:8765/admin?section=scenarios")
         page.locator('.flow-node[data-id="start"]').wait_for()
@@ -133,7 +177,7 @@ def main():
         browser.close()
     assert not errors, errors
     print(
-        "Browser smoke passed: editor, save/publish, preview, validation, campaigns, sections, mobile."
+        "Browser smoke passed: editor, save/publish, preview, validation, campaigns, managers, assigned client, sections, mobile."
     )
 
 

@@ -66,6 +66,7 @@ const notices = {
   test_sent: "Тестовое сообщение отправлено в VK.",
 };
 const failures = {
+  operators: "Укажите до 50 числовых ID менеджеров через запятую или с новой строки. Настройки не сохранены.",
   no_user: "Укажите числовой ID тестового пользователя.",
   no_campaign: "Сначала сохраните и выберите кампанию.",
   vk: "VK не принял сообщение. Проверьте токен и разрешение получателя на сообщения сообщества.",
@@ -134,13 +135,13 @@ async function loadClients() {
       ? clients
           .map(
             (c) =>
-              `<article class="panel"><div class="panel-heading"><div><h3>${e(c.name)}</h3><a class="small" href="https://vk.com/id${c.user_id}" target="_blank" rel="noopener">id${c.user_id} ↗</a></div><span class="badge ${c.handoff ? "warning" : "live"}">${c.handoff ? "Ждёт менеджера" : "Бот"}</span></div>${c.handoff ? `<button class="btn secondary" data-resume="${c.user_id}">Вернуть к боту</button>` : ""}<details><summary>Ответы клиента</summary>${Object.entries(
+              `<article class="panel"><div class="panel-heading"><div><h3>${e(c.name)}</h3><a class="small" href="https://vk.com/id${c.user_id}" target="_blank" rel="noopener">id${c.user_id} ↗</a></div><span class="badge ${c.handoff ? "warning" : "live"}">${c.handoff ? (c.assigned_operator_id ? "В работе у менеджера" : "Ждёт менеджера") : "Бот"}</span></div>${c.assigned_operator_id ? `<p>Ответственный: <a href="https://vk.com/id${c.assigned_operator_id}" target="_blank" rel="noopener">id${c.assigned_operator_id} ↗</a><span class="hint"> · с ${e(c.assigned_at)} UTC</span></p>` : ""}${c.handoff ? `<button class="btn secondary" data-resume="${c.user_id}">Вернуть к боту</button>` : ""}<details><summary>Ответы клиента</summary>${Object.entries(
                 c.variables,
               )
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)
                 .join(
                   "",
-                )}</details><details open><summary>Входящие сообщения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.status === "failed" ? "Ошибка" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
+                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
       : '<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="/admin?section=scenarios">Открыть сценарии</a></div>';

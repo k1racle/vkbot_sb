@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import os
+import time
 from unittest.mock import AsyncMock
 
 # Tests must never load a user's database or VK credentials.
@@ -568,3 +569,317 @@ def test_video_uses_document_upload_for_community_token(monkeypatch, tmp_path):
     assert result == "doc-123_456"
     assert api.call_args_list[0].args == ("docs.getMessagesUploadServer",)
     assert api.call_args_list[1].args == ("docs.save",)
+
+
+def operator_reply(operator=99, number=20, user=77, nested=False, date=None):
+    message = {
+        "from_id": -123,
+        "peer_id": user,
+        "out": 1,
+        "admin_author_id": operator,
+        "text": "Здравствуйте, помогу вам!",
+        "date": int(time.time()) if date is None else date,
+        "conversation_message_id": number,
+    }
+    return {
+        "type": "message_reply",
+        "group_id": 123,
+        "secret": "test-secret",
+        "event_id": f"reply:{user}:{number}",
+        "object": {"message": message} if nested else message,
+    }
+
+
+def start_handoff(client, sessions, sent, operators="99, 100", number=1):
+    with sessions() as session:
+        db.save_settings(
+            session, {"operator_user_id": operators, "chat_enabled": "true"}
+        )
+    client.post("/vk/callback", json=event("менеджер", number))
+    keyboard = next(
+        call.kwargs["keyboard"]
+        for call in reversed(sent.call_args_list)
+        if call.args[0] == 99 and call.kwargs.get("keyboard")
+    )
+    return json.loads(keyboard["buttons"][0][0]["action"]["payload"])
+
+
+def test_manager_settings_accept_list_and_reject_invalid_atomically(setup):
+    from app.operators import parse_operator_ids
+
+    client, sessions, _ = setup
+    login(client)
+    assert parse_operator_ids("99, 100\n99; 101") == [99, 100, 101]
+    assert parse_operator_ids("") == []
+    for invalid in (
+        "99, hello",
+        "-99",
+        "0",
+        "1.5",
+        str(2**53),
+        ",".join(map(str, range(1, 52))),
+    ):
+        with pytest.raises(ValueError):
+            parse_operator_ids(invalid)
+    response = client.post(
+        "/admin/chat-settings",
+        data={
+            "operator_user_id": "99,100\n99",
+            "chat_enabled": "1",
+        },
+    )
+    assert response.status_code == 200
+    assert "ID менеджеров VK" in response.text
+    assert '<textarea name="operator_user_id"' in response.text
+    response = client.post("/admin/chat-settings", data={"operator_user_id": "99, bad"})
+    assert "settings_error=operators" in str(response.url)
+    with sessions() as session:
+        assert db.read_settings(session)["operator_user_id"] == "99, 100"
+        assert db.read_settings(session)["chat_enabled"] == "true"
+
+
+def test_all_managers_notified_once_and_failure_does_not_stop_others(setup):
+    import httpx
+
+    client, sessions, sent = setup
+
+    async def send(user, *args, **kwargs):
+        if user == 99:
+            raise httpx.ReadTimeout("timeout")
+
+    sent.side_effect = send
+    claim = start_handoff(client, sessions, sent, "99,100,100")
+    assert [call.args[0] for call in sent.call_args_list] == [77, 99, 100]
+    assert claim["client_id"] == 77
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.handoff and row.assigned_operator_id is None
+        assert row.handoff_token == claim["token"]
+        assert "99 не доставлено" in session.query(db.DialogEvent).first().error
+    client.post("/vk/callback", json=event("менеджер", 1))
+    assert sent.call_count == 3
+    client.post("/vk/callback", json=event("жду", 2))
+    assert sent.call_count == 3
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_first_real_reply_wins_and_duplicates_do_not_notify_again(setup, nested):
+    client, sessions, sent = setup
+    start_handoff(client, sessions, sent)
+    sent.reset_mock()
+    reply = operator_reply(nested=nested)
+    assert client.post("/vk/callback", json=reply).text == "ok"
+    assert [call.args[0] for call in sent.call_args_list] == [99, 100]
+    assert "закреплено за вами" in sent.call_args_list[0].args[1]
+    client.post("/vk/callback", json=reply)
+    assert sent.call_count == 2
+    client.post("/vk/callback", json=operator_reply(operator=100, number=21))
+    assert sent.call_args.args[0] == 100
+    assert "id99" in sent.call_args.args[1]
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.handoff and row.assigned_operator_id == 99
+        assert row.assigned_at is not None
+        assert (
+            session.query(db.DialogEvent).filter_by(kind="operator_reply").count() == 2
+        )
+    login(client)
+    data = client.get("/admin/api/conversations").json()[0]
+    assert data["assigned_operator_id"] == 99
+    assert data["events"][0]["kind"] == "operator_reply"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"admin_author_id": 0},
+        {"admin_author_id": 101},
+        {"from_id": -456},
+        {"out": 0},
+        {"date": 1},
+        {"peer_id": 2_000_000_001},
+    ],
+)
+def test_automatic_assignment_rejects_bots_unlisted_and_old_replies(setup, change):
+    client, sessions, sent = setup
+    start_handoff(client, sessions, sent)
+    sent.reset_mock()
+    reply = operator_reply()
+    reply["object"].update(change)
+    client.post("/vk/callback", json=reply)
+    sent.assert_not_called()
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id is None
+
+
+def test_claim_button_authorization_and_old_generation(setup):
+    client, sessions, sent = setup
+    claim = start_handoff(client, sessions, sent)
+    client.post(
+        "/vk/callback", json=event("Взять в работу", 1, user=1234, payload=claim)
+    )
+    client.post(
+        "/vk/callback",
+        json=event("Взять в работу", 1, user=99, payload=dict(claim, token="wrong")),
+    )
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id is None
+        assert session.get(db.Conversation, 99) is None
+        assert session.get(db.Conversation, 1234) is None
+    click = event("Взять в работу", 2, user=99, payload=json.dumps(claim))
+    client.post("/vk/callback", json=click)
+    count = sent.call_count
+    client.post("/vk/callback", json=click)
+    assert sent.call_count == count
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id == 99
+    client.post("/vk/callback", json=event("меню", 2))
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert not row.handoff and row.assigned_operator_id is None
+        assert row.handoff_token == "" and row.assigned_at is None
+    new_claim = start_handoff(client, sessions, sent, number=3)
+    assert new_claim["token"] != claim["token"]
+    client.post("/vk/callback", json=event("Взять в работу", 3, user=99, payload=claim))
+    assert "устарела" in sent.call_args.args[1]
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id is None
+    client.post(
+        "/vk/callback", json=event("Взять в работу", 4, user=100, payload=new_claim)
+    )
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id == 100
+
+
+def test_assignment_survives_notification_error_and_admin_resume_clears_it(setup):
+    client, sessions, sent = setup
+    start_handoff(client, sessions, sent)
+    sent.side_effect = vk_api.VkApiError("Cannot send messages")
+    client.post("/vk/callback", json=operator_reply())
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id == 99
+        assert (
+            "не доставлено"
+            in session.query(db.DialogEvent)
+            .filter_by(kind="operator_reply")
+            .first()
+            .error
+        )
+    login(client)
+    client.post("/admin/api/conversations/77/resume")
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert not row.handoff
+        assert row.assigned_operator_id is None and row.assigned_at is None
+        assert row.handoff_token == ""
+    client.post("/vk/callback", json=operator_reply(operator=100, number=21))
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id is None
+
+
+def test_parallel_manager_reply_and_button_have_only_one_winner(setup):
+    client, sessions, sent = setup
+    claim = start_handoff(client, sessions, sent)
+    sent.reset_mock()
+
+    async def slow_send(*args, **kwargs):
+        await asyncio.sleep(0.01)
+
+    sent.side_effect = slow_send
+
+    async def run():
+        await asyncio.gather(
+            dialog.handle_operator_reply(operator_reply()),
+            dialog.handle_message(event("Взять в работу", 1, user=100, payload=claim)),
+        )
+
+    asyncio.run(run())
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id == 99
+    assert (
+        sum("закреплено за вами" in call.args[1] for call in sent.call_args_list) == 1
+    )
+
+
+def test_callback_auth_and_group_checked_for_assignment(setup):
+    client, sessions, sent = setup
+    claim = start_handoff(client, sessions, sent)
+    sent.reset_mock()
+    reply = operator_reply()
+    reply["secret"] = "bad"
+    assert client.post("/vk/callback", json=reply).text == "invalid secret"
+    reply.update(secret="test-secret", group_id=456)
+    client.post("/vk/callback", json=reply)
+    click = event("Взять в работу", user=99, payload=claim)
+    click["group_id"] = 456
+    client.post("/vk/callback", json=click)
+    sent.assert_not_called()
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id is None
+
+
+def test_handoff_migration_preserves_old_dialogs(monkeypatch):
+    engine = create_engine("sqlite://")
+    monkeypatch.setattr(db, "engine", engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE conversations (user_id INTEGER PRIMARY KEY, scenario_id INTEGER, version INTEGER, node_id VARCHAR(64), variables JSON, handoff BOOLEAN, updated_at TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO conversations VALUES (77, NULL, 0, '', '{}', TRUE, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE dialog_events (id INTEGER PRIMARY KEY, event_key VARCHAR(160), user_id INTEGER, text TEXT, status VARCHAR(32), error TEXT, created_at TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO dialog_events VALUES (1, 'old', 77, 'KEEP', 'done', '', CURRENT_TIMESTAMP)"
+            )
+        )
+    db.init_db()
+    db.init_db()
+    with sessionmaker(bind=engine)() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.handoff and row.assigned_operator_id is None
+        assert row.handoff_started_at == 0 and row.handoff_token == ""
+        assert session.get(db.DialogEvent, 1).kind == "incoming"
+        assert session.get(db.DialogEvent, 1).text == "KEEP"
+    engine.dispose()
+
+
+def test_manager_rate_limit_retry_keeps_random_id(setup, monkeypatch):
+    client, sessions, sent = setup
+    attempts = []
+
+    async def send(user, *args, **kwargs):
+        if user == 99:
+            attempts.append(kwargs["random_id"])
+            if len(attempts) == 1:
+                raise vk_api.VkApiError("6: Too many requests")
+
+    monkeypatch.setattr(dialog.asyncio, "sleep", AsyncMock())
+    sent.side_effect = send
+    start_handoff(client, sessions, sent)
+    assert len(attempts) == 2 and attempts[0] == attempts[1]
+
+
+def test_delayed_reply_cannot_claim_new_request_even_with_same_timestamp(setup):
+    client, sessions, sent = setup
+    start_handoff(client, sessions, sent)
+    client.post("/vk/callback", json=event("меню", 21))
+    start_handoff(client, sessions, sent, number=30)
+    # The previous request's reply was sent before this new request but its
+    # callback arrived later. VK's per-conversation sequence is authoritative.
+    client.post("/vk/callback", json=operator_reply(number=20))
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.handoff_message_id == 30 and row.assigned_operator_id is None
+    client.post("/vk/callback", json=operator_reply(operator=100, number=31))
+    with sessions() as session:
+        assert session.get(db.Conversation, 77).assigned_operator_id == 100

@@ -21,8 +21,15 @@ from .db import (
     read_settings,
     save_settings,
 )
-from .dialog import CALLBACK_SLOTS, delivered, handle_message, user_lock
+from .dialog import (
+    CALLBACK_SLOTS,
+    delivered,
+    handle_message,
+    handle_operator_reply,
+    user_lock,
+)
 from .flows import render
+from .operators import parse_operator_ids
 from .scenario_api import router as scenario_router
 from .vk_api import (
     VkApiError,
@@ -245,6 +252,13 @@ async def update_chat_settings(
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        operator_user_id = ", ".join(map(str, parse_operator_ids(operator_user_id)))
+    except ValueError:
+        return RedirectResponse(
+            "/admin?section=chat&settings_error=operators",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     with SessionLocal() as session:
         save_settings(
             session,
@@ -452,6 +466,9 @@ async def vk_callback(request: Request) -> str:
         return settings.vk_confirmation_code
     if payload.get("type") == "message_new":
         await handle_message(payload)
+        return "ok"
+    if payload.get("type") == "message_reply":
+        await handle_operator_reply(payload)
         return "ok"
     if payload.get("type") != "wall_reply_new":
         return "ok"
