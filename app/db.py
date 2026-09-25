@@ -49,6 +49,10 @@ def already_processed(session: Session, comment_id: int) -> bool:
     return session.query(ProcessedComment).filter_by(comment_id=comment_id).first() is not None
 
 
+def already_sent_to_user(session: Session, user_id: int) -> bool:
+    return session.query(ProcessedComment).filter_by(user_id=user_id, status="sent").first() is not None
+
+
 def read_settings(session: Session) -> dict[str, str]:
     return {item.key: item.value for item in session.query(BotSetting).all()}
 

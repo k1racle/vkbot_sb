@@ -24,8 +24,14 @@
         <label>Ссылка на магазин</label><input name="shop_url" type="url" value="{{ form.shop_url }}" required>
         <label>Текст сообщения</label><textarea name="promo_message" required>{{ form.promo_message }}</textarea>
         <div class="hint">Доступные переменные: {promo_code}, {shop_url}</div>
+        <label>Вложения VK</label><input name="promo_attachments" value="{{ form.promo_attachments }}" placeholder="photo-123_456,video-123_789">
+        <div class="hint">Укажи VK attachment ID через запятую: photo-..., video-..., doc-....</div>
         <label>ID постов</label><input name="allowed_post_ids" value="{{ form.allowed_post_ids }}" placeholder="Пусто — все посты">
         <div class="hint">Несколько ID указываются через запятую.</div>
+        <label>Минимальная длина комментария</label><input name="min_comment_length" type="number" min="0" value="{{ form.min_comment_length }}">
+        <label>Стоп-слова</label><textarea name="stop_words" style="min-height:90px" placeholder="слово 1&#10;слово 2">{{ form.stop_words }}</textarea>
+        <div class="hint">По одному слову или фразе на строку. При совпадении бот не отвечает.</div>
+        <label style="display:flex;gap:9px;align-items:center"><input name="one_promo_per_user" type="checkbox" value="1" style="width:auto" {% if form.one_promo_per_user %}checked{% endif %}> Выдавать промокод пользователю только один раз</label>
         <button type="submit">Сохранить настройки</button>
       </form>
       <section class="panel"><h2>Как это работает</h2><p class="muted">Бот получает новый комментарий, проверяет подписку на сообщество и отправляет промокод в личные сообщения.</p><p class="muted">Если пользователь не разрешил сообщения от сообщества, VK вернёт ошибку — она появится в журнале.</p><h3>Следующий этап</h3><p class="muted">Добавим кампании для разных постов, тестовую отправку и расширенную статистику.</p></section>

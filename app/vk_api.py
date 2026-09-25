@@ -25,5 +25,8 @@ async def is_group_member(user_id: int) -> bool:
     return bool(result)
 
 
-async def send_message(user_id: int, text: str, random_id: int) -> None:
-    await call("messages.send", user_id=user_id, random_id=random_id, message=text)
+async def send_message(user_id: int, text: str, random_id: int, attachment: str = "") -> None:
+    params = {"user_id": user_id, "random_id": random_id, "message": text}
+    if attachment.strip():
+        params["attachment"] = attachment.strip()
+    await call("messages.send", **params)

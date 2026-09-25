@@ -8,7 +8,15 @@ from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func
 
 from .config import get_settings
-from .db import ProcessedComment, SessionLocal, already_processed, init_db, read_settings, save_settings
+from .db import (
+    ProcessedComment,
+    SessionLocal,
+    already_processed,
+    already_sent_to_user,
+    init_db,
+    read_settings,
+    save_settings,
+)
 from .vk_api import VkApiError, is_group_member, send_message
 
 settings = get_settings()
@@ -36,6 +44,15 @@ async def root():
 
 def admin_required(request: Request) -> bool:
     return bool(request.session.get("admin_authenticated"))
+
+
+def setting(values: dict[str, str], name: str, default):
+    value = values.get(name)
+    return default if value is None else value
+
+
+def as_bool(value: str | bool) -> bool:
+    return value is True or str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -75,7 +92,11 @@ async def admin_page(request: Request):
         "promo_code": values.get("promo_code", settings.promo_code),
         "shop_url": values.get("shop_url", settings.shop_url),
         "promo_message": values.get("promo_message", settings.promo_message).replace("\\n", "\n"),
+        "promo_attachments": values.get("promo_attachments", settings.promo_attachments),
         "allowed_post_ids": values.get("allowed_post_ids", settings.allowed_post_ids),
+        "stop_words": values.get("stop_words", settings.stop_words),
+        "min_comment_length": values.get("min_comment_length", str(settings.min_comment_length)),
+        "one_promo_per_user": as_bool(values.get("one_promo_per_user", str(settings.one_promo_per_user))),
     }
     return templates.TemplateResponse(
         "admin.html",
@@ -89,7 +110,11 @@ async def update_admin_settings(
     promo_code: str = Form(...),
     shop_url: str = Form(...),
     promo_message: str = Form(...),
+    promo_attachments: str = Form(""),
     allowed_post_ids: str = Form(""),
+    stop_words: str = Form(""),
+    min_comment_length: int = Form(1),
+    one_promo_per_user: str | None = Form(None),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -100,7 +125,11 @@ async def update_admin_settings(
                 "promo_code": promo_code.strip(),
                 "shop_url": shop_url.strip(),
                 "promo_message": promo_message,
+                "promo_attachments": promo_attachments.strip(),
                 "allowed_post_ids": allowed_post_ids.strip(),
+                "stop_words": stop_words.strip(),
+                "min_comment_length": str(max(0, min_comment_length)),
+                "one_promo_per_user": "true" if one_promo_per_user else "false",
             },
         )
     return RedirectResponse("/admin?saved=1", status_code=status.HTTP_303_SEE_OTHER)
@@ -123,6 +152,7 @@ async def vk_callback(request: Request) -> str:
     comment_id = int(obj.get("id", 0))
     post_id = int(obj.get("post_id", 0))
     user_id = int(obj.get("from_id", 0))
+    comment_text = str(obj.get("text", "")).strip()
     if not comment_id or user_id <= 0:
         return "ok"
     with SessionLocal() as session:
@@ -133,6 +163,26 @@ async def vk_callback(request: Request) -> str:
         session.commit()
 
     try:
+        min_length = int(setting(values, "min_comment_length", settings.min_comment_length))
+        if len(comment_text) < min_length:
+            update_status(comment_id, "too_short")
+            return "ok"
+
+        stop_words = [
+            word.strip().casefold()
+            for word in str(setting(values, "stop_words", settings.stop_words)).replace(",", "\n").splitlines()
+            if word.strip()
+        ]
+        if any(word in comment_text.casefold() for word in stop_words):
+            update_status(comment_id, "stop_word")
+            return "ok"
+
+        if as_bool(setting(values, "one_promo_per_user", settings.one_promo_per_user)):
+            with SessionLocal() as session:
+                if already_sent_to_user(session, user_id):
+                    update_status(comment_id, "already_sent")
+                    return "ok"
+
         post_ids = values.get("allowed_post_ids", settings.allowed_post_ids).strip()
         if post_ids and post_id not in {int(value.strip()) for value in post_ids.split(",") if value.strip()}:
             update_status(comment_id, "post_filtered")
@@ -146,7 +196,8 @@ async def vk_callback(request: Request) -> str:
             promo_code=values.get("promo_code", settings.promo_code),
             shop_url=values.get("shop_url", settings.shop_url),
         )
-        await send_message(user_id, text, random_id=comment_id)
+        attachments = values.get("promo_attachments", settings.promo_attachments)
+        await send_message(user_id, text, random_id=comment_id, attachment=attachments)
         update_status(comment_id, "sent")
         logger.info("Promo sent: comment=%s user=%s", comment_id, user_id)
     except VkApiError as error:

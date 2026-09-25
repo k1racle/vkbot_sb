@@ -19,7 +19,11 @@ class Settings(BaseSettings):
         "Магазин: {shop_url}"
     )
     shop_url: str = "https://example.com"
+    promo_attachments: str = ""
     allowed_post_ids: str = ""
+    stop_words: str = ""
+    min_comment_length: int = 1
+    one_promo_per_user: bool = True
     log_level: str = "INFO"
     admin_username: str = "admin"
     admin_password: str
