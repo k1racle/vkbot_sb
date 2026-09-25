@@ -263,6 +263,18 @@ async def delete_campaign(request: Request, campaign_id: int):
     return RedirectResponse("/admin?campaign_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/admin/campaigns/{campaign_id}/toggle")
+async def toggle_campaign(request: Request, campaign_id: int):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign:
+            campaign.enabled = not campaign.enabled
+            session.commit()
+    return RedirectResponse("/admin?campaign_toggled=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/admin/test-send")
 async def test_send(request: Request):
     if not admin_required(request):
