@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     operator_trigger_words: str = "оператор,менеджер,человек"
     operator_ack: str = "Передал запрос менеджеру. Скоро с вами свяжутся."
     log_level: str = "INFO"
+    background_jobs_enabled: bool = True
     admin_username: str = "admin"
     admin_password: str
     admin_session_secret: str

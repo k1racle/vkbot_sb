@@ -71,9 +71,13 @@
   </aside>
 </div>
 {% elif section == 'clients' %}
-<div class="page-heading"><div><span class="eyebrow">ДИАЛОГИ</span><h1>Клиенты</h1><p>Сообщения клиентов, обращения и ответственные менеджеры.</p></div><button class="btn secondary" id="refresh-clients">Обновить</button></div><div id="clients-list" class="client-grid"><div class="panel">Загрузка диалогов…</div></div>
+{% include 'clients.html' %}
+{% elif section == 'broadcasts' %}
+{% include 'broadcasts.html' %}
+{% elif section == 'dialogs' %}
+<div class="page-heading"><div><span class="eyebrow">КЛИЕНТЫ / ОБРАЩЕНИЯ</span><h1>Диалоги и менеджеры</h1><p>Сообщения клиентов, обращения и ответственные менеджеры.</p></div><div class="crm-actions"><a href="/admin?section=clients" class="btn secondary">Все клиенты</a><button class="btn secondary" id="refresh-clients">Обновить</button></div></div><div id="clients-list" class="client-grid"><div class="panel">Загрузка диалогов…</div></div>
 {% else %}
 <div class="page-heading"><div><span class="eyebrow">РЕЗУЛЬТАТЫ КАМПАНИЙ</span><h1>Статистика</h1><p>Выдача промокодов и обработка комментариев.</p></div></div><div class="stats-grid"><div class="metric"><span>Комментариев обработано</span><strong>{{ stats.total }}</strong><small>За всё время</small></div><div class="metric mint"><span>Промокодов отправлено</span><strong>{{ stats.sent }}</strong><small>Успешные отправки</small></div><div class="metric"><span>Ошибок отправки</span><strong>{{ stats.failed }}</strong><small>Подробности в журнале</small></div></div><div class="panel"><h2>Последние события</h2><div class="status-summary">{% for name,count in stats.status_counts.items() %}<span class="badge" data-status="{{ name }}">{{ name }} · {{ count }}</span>{% endfor %}</div><div class="table-wrap"><table><thead><tr><th>Комментарий</th><th>Публикация</th><th>Клиент</th><th>Результат</th><th>Подробности</th></tr></thead><tbody>{% for e in recent %}<tr><td>#{{ e.comment_id }}</td><td><a href="https://vk.com/{{ 'video' if e.source_type == 'video' else 'wall' }}{{ e.owner_id }}_{{ e.post_id }}" target="_blank" rel="noopener">{{ 'Видео' if e.source_type == 'video' else 'Пост' }} {{ e.post_id }} ↗</a></td><td><a href="https://vk.com/id{{ e.user_id }}" target="_blank" rel="noopener">{{ e.user_id }} ↗</a></td><td><span class="badge" data-status="{{ e.status }}">{{ e.status }}</span></td><td class="error-cell">{{ e.error or '—' }}</td></tr>{% else %}<tr><td colspan="5" class="empty">Пока нет событий. Здесь появятся результаты обработки комментариев.</td></tr>{% endfor %}</tbody></table></div></div>
 {% endif %}
 {% endblock %}
-{% block scripts %}{% if section == 'scenarios' %}<script src="/static/flows.js?v=3" defer></script>{% endif %}{% endblock %}
+{% block scripts %}{% if section == 'scenarios' %}<script src="/static/flows.js?v=3" defer></script>{% endif %}{% if section in ['clients', 'broadcasts'] %}<script src="/static/crm.js?v=1" defer></script>{% endif %}{% endblock %}

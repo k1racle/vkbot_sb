@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -13,8 +14,10 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.sessions import SessionMiddleware
 
+from . import broadcasts, clients
 from .comments import Comment, normalize_comment
 from .config import get_settings
+from .crm_api import router as crm_router
 from .db import (
     Campaign,
     ProcessedComment,
@@ -57,13 +60,25 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(scenario_router)
+app.include_router(crm_router)
 ATTACHMENT_DIR = Path("data")
 ATTACHMENT_DIR.mkdir(exist_ok=True)
 
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    clients.backfill_clients()
+    app.state.outbound_worker = (
+        asyncio.create_task(broadcasts.worker_loop())
+        if settings.background_jobs_enabled
+        else None
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await broadcasts.stop_worker(getattr(app.state, "outbound_worker", None))
 
 
 @app.get("/health")
@@ -130,6 +145,8 @@ async def admin_page(
         "stats",
         "scenarios",
         "clients",
+        "broadcasts",
+        "dialogs",
     }:
         section = "scenarios"
     request.session.setdefault("csrf", secrets.token_urlsafe(32))
@@ -534,6 +551,18 @@ async def vk_callback(request: Request) -> str:
     if payload.get("type") == "group_join":
         await handle_group_join(payload)
         return "ok"
+    if payload.get("type") in {"message_allow", "message_deny"}:
+        if payload.get("group_id") == settings.vk_group_id:
+            obj = payload.get("object")
+            user_id = obj.get("user_id") if isinstance(obj, dict) else None
+            with SessionLocal() as session:
+                client = clients.ensure_client(session, user_id)
+                if client:
+                    client.messages_allowed = payload["type"] == "message_allow"
+                    if payload["type"] == "message_deny":
+                        client.unsubscribed = True
+                    session.commit()
+        return "ok"
     comment = normalize_comment(payload, settings.vk_group_id)
     if comment is None:
         return "ok"
@@ -565,6 +594,7 @@ async def process_comment(comment: Comment) -> str:
             campaign = session.query(Campaign).filter_by(post_id=0).first()
         if already_processed(session, event_key):
             return "ok"
+        clients.ensure_client(session, user_id)
         session.add(
             ProcessedComment(
                 event_key=event_key,

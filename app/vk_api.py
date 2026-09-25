@@ -7,7 +7,10 @@ from .config import get_settings
 
 
 class VkApiError(RuntimeError):
-    pass
+    def __init__(self, message):
+        super().__init__(message)
+        prefix = str(message).split(":", 1)[0]
+        self.code = int(prefix) if prefix.isdigit() else None
 
 
 async def call(method: str, **params):
@@ -75,6 +78,9 @@ async def send_message(
     if keyboard is not None:
         params["keyboard"] = json.dumps(keyboard, ensure_ascii=False)
     await call("messages.send", **params)
+    from .clients import record_outgoing
+
+    record_outgoing(user_id, random_id)
 
 
 async def upload_file_for_message(

@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import time
+import weakref
 from unittest.mock import AsyncMock
 
 # Tests must never load a user's database or VK credentials.
@@ -16,6 +17,7 @@ os.environ.update(
     ADMIN_SESSION_SECRET="test-session-secret",
     DATABASE_URL="sqlite://",
     CHAT_ENABLED="true",
+    BACKGROUND_JOBS_ENABLED="false",
 )
 
 import pytest
@@ -30,6 +32,11 @@ from app.flows import Graph, starter_graph, validate_graph
 
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
+    # Each TestClient owns a different event loop. Never carry async locks across tests.
+    monkeypatch.setattr(dialog, "_locks", weakref.WeakValueDictionary())
+    slots = asyncio.Semaphore(4)
+    monkeypatch.setattr(dialog, "CALLBACK_SLOTS", slots)
+    monkeypatch.setattr(main, "CALLBACK_SLOTS", slots)
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )

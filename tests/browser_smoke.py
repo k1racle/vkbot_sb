@@ -218,7 +218,7 @@ def main():
                 ]
             ),
         )
-        page.goto("http://127.0.0.1:8765/admin?section=clients")
+        page.goto("http://127.0.0.1:8765/admin?section=dialogs")
         page.get_by_text("В работе у менеджера", exact=True).wait_for()
         page.get_by_role("link", name="id99 ↗").wait_for()
         page.get_by_text("Ответ менеджера", exact=False).wait_for()

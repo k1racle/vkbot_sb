@@ -7,6 +7,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     func,
     inspect,
@@ -153,6 +154,78 @@ class PromoDelivery(Base):
     user_id: Mapped[int] = mapped_column(index=True)
     campaign_id: Mapped[int] = mapped_column(index=True)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class Client(Base):
+    __tablename__ = "clients"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    first_name: Mapped[str] = mapped_column(String(120), default="")
+    last_name: Mapped[str] = mapped_column(String(120), default="")
+    photo_url: Mapped[str] = mapped_column(Text, default="")
+    phone: Mapped[str] = mapped_column(String(80), default="")
+    phone_source: Mapped[str] = mapped_column(String(32), default="")
+    deactivated: Mapped[bool] = mapped_column(default=False)
+    bot_contacted_at: Mapped[object | None] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    contact_source: Mapped[str] = mapped_column(String(32), default="")
+    last_incoming_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    messages_allowed: Mapped[bool | None] = mapped_column(nullable=True)
+    unsubscribed: Mapped[bool] = mapped_column(default=False, index=True)
+    profile_requested: Mapped[bool] = mapped_column(default=True, index=True)
+    profile_updated_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    profile_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class BotMessage(Base):
+    __tablename__ = "bot_messages"
+
+    event_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    # Only successful outgoing private sends. Never contains credentials.
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class Broadcast(Base):
+    __tablename__ = "broadcasts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(String(120))
+    message: Mapped[str] = mapped_column(Text)
+    media_id: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    consent_confirmed: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+
+
+class BroadcastRecipient(Base):
+    __tablename__ = "broadcast_recipients"
+    __table_args__ = (UniqueConstraint("broadcast_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcast_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    lease_until: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    lease_token: Mapped[str] = mapped_column(String(32), default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+    sent_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+
+
+class WorkLease(Base):
+    __tablename__ = "work_leases"
+
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(32), default="")
+    until: Mapped[object | None] = mapped_column(DateTime, nullable=True)
 
 
 def make_engine():

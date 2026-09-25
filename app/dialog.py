@@ -12,6 +12,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy import update
 
 from . import vk_api
+from .clients import ensure_client, record_incoming
 from .config import get_settings
 from .db import (
     Campaign,
@@ -369,7 +370,7 @@ async def handle_message(payload):
     user_id = int(message.get("from_id", 0))
     if (
         numeric_id(payload.get("group_id")) != get_settings().vk_group_id
-        or user_id <= 0
+        or not 0 < user_id < 2_000_000_000
         or message.get("out")
         or int(message.get("peer_id", user_id)) != user_id
     ):
@@ -381,7 +382,46 @@ async def handle_message(payload):
     )
     if not event_id:
         return
+    record_incoming(user_id)
     incoming = incoming_payload(message)
+    word = str(message.get("text", "")).strip().casefold()
+    unsubscribe = incoming.get("action") == "broadcast_unsubscribe" or (
+        not incoming
+        and word in {"стоп", "stop", "/stop", "отписаться", "отписаться от рассылок"}
+    )
+    subscribe = not incoming and word in {"подписаться на рассылку", "/subscribe"}
+    if unsubscribe or subscribe:
+        key = f"newsletter:{payload.get('group_id')}:{user_id}:{event_id}"[:160]
+        async with user_lock(user_id), CALLBACK_SLOTS:
+            with SessionLocal() as session:
+                lock_conversation(session, user_id)
+                if session.query(DialogEvent).filter_by(event_key=key).first():
+                    return
+                client = ensure_client(session, user_id)
+                client.unsubscribed = unsubscribe
+                session.add(
+                    DialogEvent(
+                        event_key=key,
+                        user_id=user_id,
+                        kind="newsletter",
+                        text=word,
+                        status="done",
+                    )
+                )
+                session.commit()  # Failure to acknowledge must never undo an opt-out.
+            try:
+                port = LivePort(None, user_id, key, {})
+                await port.emit(
+                    "Рассылки отключены. Чтобы вернуть их, напишите «Подписаться на рассылку»."
+                    if unsubscribe
+                    else "Вы подписались на рассылки сообщества. Для отказа напишите «Стоп».",
+                    preserve_keyboard=True,
+                )
+            except (vk_api.VkApiError, httpx.HTTPError):
+                logger.warning(
+                    "Newsletter preference saved; acknowledgment failed for %s", user_id
+                )
+        return
     if incoming.get("action") == "operator_claim":
         if numeric_id(payload.get("group_id")) == get_settings().vk_group_id:
             await assign_operator(payload, message, user_id, claim=incoming)
