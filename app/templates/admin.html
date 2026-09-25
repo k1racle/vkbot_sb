@@ -17,15 +17,16 @@
       <div class="card"><div class="muted">Ошибок отправки</div><div class="stat-number">{{ stats.failed }}</div></div>
     </section>
     <section class="grid">
-      <form class="panel" method="post" action="/admin/settings">
+      <form class="panel" method="post" action="/admin/settings" enctype="multipart/form-data">
         <h2>Настройки кампании</h2>
         <p class="muted">Изменения применяются сразу, перезапуск бота не нужен.</p>
         <label>Промокод</label><input name="promo_code" value="{{ form.promo_code }}" required>
         <label>Ссылка на магазин</label><input name="shop_url" type="url" value="{{ form.shop_url }}" required>
         <label>Текст сообщения</label><textarea name="promo_message" required>{{ form.promo_message }}</textarea>
         <div class="hint">Доступные переменные: {promo_code}, {shop_url}</div>
-        <label>Вложения VK</label><input name="promo_attachments" value="{{ form.promo_attachments }}" placeholder="photo-123_456,video-123_789">
-        <div class="hint">Укажи VK attachment ID через запятую: photo-..., video-..., doc-....</div>
+        <label>Файл в ответе</label>
+        <input name="attachment" type="file" accept="image/*,video/*,audio/*,.pdf,.zip,.txt">
+        {% if form.attachment_name %}<div class="hint" style="margin-top:10px">Прикреплён: {{ form.attachment_name }} <a href="/admin/attachment/delete" style="color:#a63232">Удалить</a></div>{% else %}<div class="hint">Можно прикрепить изображение, видео, аудио, PDF или документ до 50 МБ.</div>{% endif %}
         <label>ID постов</label><input name="allowed_post_ids" value="{{ form.allowed_post_ids }}" placeholder="Пусто — все посты">
         <div class="hint">Несколько ID указываются через запятую.</div>
         <label>Минимальная длина комментария</label><input name="min_comment_length" type="number" min="0" value="{{ form.min_comment_length }}">

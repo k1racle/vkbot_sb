@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import httpx
 
 from .config import get_settings
@@ -30,3 +33,52 @@ async def send_message(user_id: int, text: str, random_id: int, attachment: str 
     if attachment.strip():
         params["attachment"] = attachment.strip()
     await call("messages.send", **params)
+
+
+async def upload_file_for_message(user_id: int, path: Path, filename: str, content_type: str) -> str:
+    settings = get_settings()
+    if content_type.startswith("image/"):
+        server = await call("photos.getMessagesUploadServer", peer_id=user_id)
+        field_name = "photo"
+        save_method = "photos.saveMessagesPhoto"
+    elif content_type.startswith("video/"):
+        video = await call("video.save", name=filename, is_private=1)
+        upload_url = video["upload_url"]
+        field_name = "video"
+        async with httpx.AsyncClient(timeout=180) as client:
+            with path.open("rb") as file_handle:
+                response = await client.post(upload_url, files={field_name: (filename, file_handle, content_type)})
+        response.raise_for_status()
+        return f"video{video['owner_id']}_{video['video_id']}"
+    else:
+        server = await call("docs.getMessagesUploadServer", type="doc", peer_id=user_id)
+        field_name = "file"
+        save_method = "docs.save"
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        with path.open("rb") as file_handle:
+            response = await client.post(
+                server["upload_url"],
+                files={field_name: (filename, file_handle, content_type)},
+            )
+    response.raise_for_status()
+    uploaded = response.json()
+    if "error" in uploaded:
+        error = uploaded["error"]
+        raise VkApiError(f"{error.get('error_code')}: {error.get('error_msg')}")
+
+    if save_method == "photos.saveMessagesPhoto":
+        save_params = {
+            "server": uploaded.get("server"),
+            "hash": uploaded.get("hash"),
+            "photo": uploaded.get("photo"),
+        }
+        if uploaded.get("files"):
+            save_params["photo"] = json.dumps(uploaded["files"], separators=(",", ":"))
+        saved = await call(save_method, **save_params)
+        photo = saved[0]
+        return f"photo{photo['owner_id']}_{photo['id']}"
+
+    saved = await call(save_method, file=uploaded["file"], title=filename[:128])
+    document = saved.get("doc") or saved[0]
+    return f"doc{document['owner_id']}_{document['id']}"

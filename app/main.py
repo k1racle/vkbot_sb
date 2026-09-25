@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
+from uuid import uuid4
 
-from fastapi import FastAPI, Form, Request, status
+from fastapi import FastAPI, File, Form, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.responses import PlainTextResponse
 from fastapi.templating import Jinja2Templates
@@ -17,7 +19,7 @@ from .db import (
     read_settings,
     save_settings,
 )
-from .vk_api import VkApiError, is_group_member, send_message
+from .vk_api import VkApiError, is_group_member, send_message, upload_file_for_message
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
@@ -25,6 +27,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="VK Comment Promo Bot")
 templates = Jinja2Templates(directory="app/templates")
 app.add_middleware(SessionMiddleware, secret_key=settings.admin_session_secret, https_only=False, max_age=60 * 60 * 12)
+ATTACHMENT_DIR = Path("data")
+ATTACHMENT_DIR.mkdir(exist_ok=True)
 
 
 @app.on_event("startup")
@@ -93,6 +97,7 @@ async def admin_page(request: Request):
         "shop_url": values.get("shop_url", settings.shop_url),
         "promo_message": values.get("promo_message", settings.promo_message).replace("\\n", "\n"),
         "promo_attachments": values.get("promo_attachments", settings.promo_attachments),
+        "attachment_name": values.get("attachment_name", ""),
         "allowed_post_ids": values.get("allowed_post_ids", settings.allowed_post_ids),
         "stop_words": values.get("stop_words", settings.stop_words),
         "min_comment_length": values.get("min_comment_length", str(settings.min_comment_length)),
@@ -115,24 +120,95 @@ async def update_admin_settings(
     stop_words: str = Form(""),
     min_comment_length: int = Form(1),
     one_promo_per_user: str | None = Form(None),
+    attachment: UploadFile | None = File(None),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    values_to_save = {
+        "promo_code": promo_code.strip(),
+        "shop_url": shop_url.strip(),
+        "promo_message": promo_message,
+        "promo_attachments": promo_attachments.strip(),
+        "allowed_post_ids": allowed_post_ids.strip(),
+        "stop_words": stop_words.strip(),
+        "min_comment_length": str(max(0, min_comment_length)),
+        "one_promo_per_user": "true" if one_promo_per_user else "false",
+    }
+    if attachment and attachment.filename:
+        if not attachment.content_type:
+            return RedirectResponse("/admin?attachment_error=empty", status_code=status.HTTP_303_SEE_OTHER)
+        allowed = attachment.content_type.startswith(("image/", "video/", "audio/")) or attachment.content_type in {
+            "application/pdf", "application/zip", "application/x-zip-compressed", "text/plain"
+        }
+        if not allowed:
+            return RedirectResponse("/admin?attachment_error=type", status_code=status.HTTP_303_SEE_OTHER)
+        data = await attachment.read()
+        if len(data) > 50 * 1024 * 1024:
+            return RedirectResponse("/admin?attachment_error=size", status_code=status.HTTP_303_SEE_OTHER)
+        path = ATTACHMENT_DIR / f"promo_{uuid4().hex}"
+        path.write_bytes(data)
+        with SessionLocal() as session:
+            old_path = read_settings(session).get("attachment_path")
+            values_to_save.update({
+                "attachment_path": str(path),
+                "attachment_name": attachment.filename,
+                "attachment_type": attachment.content_type,
+            })
+            save_settings(session, values_to_save)
+        if old_path:
+            Path(old_path).unlink(missing_ok=True)
+    else:
+        with SessionLocal() as session:
+            save_settings(session, values_to_save)
+    return RedirectResponse("/admin?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/attachment")
+async def upload_admin_attachment(request: Request, attachment: UploadFile = File(...)):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    if not attachment.filename or not attachment.content_type:
+        return RedirectResponse("/admin?attachment_error=empty", status_code=status.HTTP_303_SEE_OTHER)
+    allowed = attachment.content_type.startswith(("image/", "video/", "audio/")) or attachment.content_type in {
+        "application/pdf",
+        "application/zip",
+        "application/x-zip-compressed",
+        "text/plain",
+    }
+    if not allowed:
+        return RedirectResponse("/admin?attachment_error=type", status_code=status.HTTP_303_SEE_OTHER)
+
+    data = await attachment.read()
+    if len(data) > 50 * 1024 * 1024:
+        return RedirectResponse("/admin?attachment_error=size", status_code=status.HTTP_303_SEE_OTHER)
+
+    path = ATTACHMENT_DIR / f"promo_{uuid4().hex}"
+    path.write_bytes(data)
     with SessionLocal() as session:
+        old_path = read_settings(session).get("attachment_path")
         save_settings(
             session,
             {
-                "promo_code": promo_code.strip(),
-                "shop_url": shop_url.strip(),
-                "promo_message": promo_message,
-                "promo_attachments": promo_attachments.strip(),
-                "allowed_post_ids": allowed_post_ids.strip(),
-                "stop_words": stop_words.strip(),
-                "min_comment_length": str(max(0, min_comment_length)),
-                "one_promo_per_user": "true" if one_promo_per_user else "false",
+                "attachment_path": str(path),
+                "attachment_name": attachment.filename,
+                "attachment_type": attachment.content_type,
             },
         )
-    return RedirectResponse("/admin?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+    if old_path:
+        Path(old_path).unlink(missing_ok=True)
+    return RedirectResponse("/admin?attachment_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.api_route("/admin/attachment/delete", methods=["GET", "POST"])
+async def delete_admin_attachment(request: Request):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        values = read_settings(session)
+        save_settings(session, {"attachment_path": "", "attachment_name": "", "attachment_type": ""})
+    if values.get("attachment_path"):
+        Path(values["attachment_path"]).unlink(missing_ok=True)
+    return RedirectResponse("/admin?attachment_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post("/vk/callback", response_class=PlainTextResponse)
@@ -197,6 +273,14 @@ async def vk_callback(request: Request) -> str:
             shop_url=values.get("shop_url", settings.shop_url),
         )
         attachments = values.get("promo_attachments", settings.promo_attachments)
+        attachment_path = values.get("attachment_path", "")
+        if attachment_path and Path(attachment_path).exists():
+            attachments = await upload_file_for_message(
+                user_id,
+                Path(attachment_path),
+                values.get("attachment_name", "attachment"),
+                values.get("attachment_type", "application/octet-stream"),
+            )
         await send_message(user_id, text, random_id=comment_id, attachment=attachments)
         update_status(comment_id, "sent")
         logger.info("Promo sent: comment=%s user=%s", comment_id, user_id)
