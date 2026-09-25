@@ -36,7 +36,12 @@ from .dialog import (
     user_lock,
 )
 from .flows import render
-from .gifts import DEFAULT_INVITATIONS, invite_to_chat
+from .gifts import (
+    DEFAULT_INVITATIONS,
+    invite_to_chat,
+    resolve_chat_url,
+    validate_chat_url,
+)
 from .operators import parse_operator_ids
 from .scenario_api import router as scenario_router
 from .vk_api import (
@@ -187,6 +192,9 @@ async def admin_page(
             )
         )
     form = {
+        "chat_url": values.get("chat_url", ""),
+        "resolved_chat_url": resolve_chat_url(values),
+        "default_chat_url": resolve_chat_url({}),
         "test_mode": as_bool(values.get("test_mode", str(settings.test_mode))),
         "test_trigger_phrase": values.get(
             "test_trigger_phrase", settings.test_trigger_phrase
@@ -255,6 +263,8 @@ async def update_admin_settings(
     request: Request,
     test_mode: str | None = Form(None),
     test_trigger_phrase: str = Form("тестовое сообщение"),
+    chat_url: str = Form(""),
+    csrf_token: str = Form(""),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -262,6 +272,25 @@ async def update_admin_settings(
         "test_mode": "true" if test_mode else "false",
         "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
     }
+    # Older forms/clients without this new field must not erase the saved URL.
+    if "chat_url" in await request.form():
+        expected = request.session.get("csrf", "")
+        received = request.headers.get("X-CSRF-Token") or csrf_token
+        if (
+            not expected
+            or not received.isascii()
+            or not secrets.compare_digest(expected, received)
+        ):
+            return PlainTextResponse(
+                "Обновите страницу настроек и повторите сохранение.", status_code=403
+            )
+        try:
+            values_to_save["chat_url"] = validate_chat_url(chat_url)
+        except ValueError:
+            return RedirectResponse(
+                "/admin?section=settings&settings_error=chat_url",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
     with SessionLocal() as session:
         save_settings(session, values_to_save)
     return RedirectResponse(

@@ -11,13 +11,21 @@ import json
 import logging
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
 
 from . import vk_api
 from .config import get_settings
-from .db import Campaign, Conversation, PendingGift, ProcessedComment, PromoDelivery
+from .db import (
+    Campaign,
+    Conversation,
+    PendingGift,
+    ProcessedComment,
+    PromoDelivery,
+    read_settings,
+)
 from .flows import render
 
 logger = logging.getLogger(__name__)
@@ -41,6 +49,36 @@ DEFAULT_INVITATIONS = [
         "В чате нажмите «Начать» или отправьте слово «Подарок»."
     ),
 ]
+
+
+def validate_chat_url(value: str) -> str:
+    """Keep the admin's HTTPS destination intact; blank means automatic URL."""
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) > 500 or any(
+        c.isspace() or ord(c) < 32 or ord(c) == 127 or c in '\\<>"{}' for c in value
+    ):
+        raise ValueError("Invalid chat URL")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port == 0
+    ):
+        raise ValueError("Invalid chat URL")
+    return value
+
+
+def resolve_chat_url(values: dict[str, str]) -> str:
+    # Also tolerate a bad manually edited/legacy value without posting an unsafe link.
+    try:
+        custom = validate_chat_url(values.get("chat_url", ""))
+    except ValueError:
+        custom = ""
+    return custom or f"https://vk.me/club{get_settings().vk_group_id}"
 
 
 def delivered(session, user_id, campaign):
@@ -113,7 +151,7 @@ async def invite_to_chat(session, comment, campaign):
         session.commit()
         return
     variants = campaign.public_reply_variants or DEFAULT_INVITATIONS
-    chat_url = f"https://vk.me/club{get_settings().vk_group_id}"
+    chat_url = resolve_chat_url(read_settings(session))
     invitation = secrets.choice(variants).replace("{chat_url}", chat_url)
     gift = PendingGift(
         id=uuid4().hex,

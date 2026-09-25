@@ -120,6 +120,143 @@ def test_random_variants_are_selected_and_saved(invitations, monkeypatch):
     ]
 
 
+def test_custom_chat_url_admin_round_trip_and_gift_claim(invitations):
+    client, sessions, replies, sent = invitations
+    login(client)
+    url = "https://vk.me/sarkisian.brand?ref=gift&ref_source=wall"
+    result = client.post("/admin/settings", data={"chat_url": "  " + url + "  "})
+    assert "saved=1" in str(result.url)
+    assert 'name="chat_url"' in result.text
+    with sessions() as session:
+        assert db.read_settings(session)["chat_url"] == url
+    invite(client, sessions)
+    assert url in replies.call_args.args[1]
+    assert "{chat_url}" not in replies.call_args.args[1]
+    assert "club123" not in replies.call_args.args[1]
+    page = client.get("/admin?section=campaigns")
+    assert "Изменить ссылку на чат" in page.text
+    assert "sarkisian.brand?ref=gift&amp;ref_source=wall" in page.text
+    db.init_db()  # Saved settings survive restart/schema initialization.
+    with sessions() as session:
+        assert gifts.resolve_chat_url(db.read_settings(session)) == url
+    client.post("/vk/callback", json=message("Начать"))
+    assert sent.call_args.args == (77, "Код ALL")
+
+
+def test_chat_url_changes_only_future_invitations_and_blank_resets(invitations):
+    client, sessions, replies, _ = invitations
+    login(client)
+    client.post("/admin/settings", data={"chat_url": "https://vk.me/first.project"})
+    invite(client, sessions)
+    old_text = replies.call_args.args[1]
+    client.post("/admin/settings", data={"chat_url": "https://vk.me/second.project"})
+    client.post("/vk/callback", json=comment(user=88, number=2))
+    assert "https://vk.me/second.project" in replies.call_args.args[1]
+    with sessions() as session:
+        assert (
+            session.query(db.PendingGift).filter_by(user_id=77).one().invitation_text
+            == old_text
+        )
+    # A duplicate must not republish an old invitation under the new URL.
+    client.post("/vk/callback", json=comment())
+    assert replies.call_count == 2
+    client.post("/admin/settings", data={"chat_url": ""})
+    client.post("/vk/callback", json=comment(user=99, number=3))
+    assert "https://vk.me/club123" in replies.call_args.args[1]
+    with sessions() as session:
+        assert db.read_settings(session)["chat_url"] == ""
+
+
+def test_older_settings_form_does_not_erase_custom_chat_url(invitations):
+    client, sessions, _, _ = invitations
+    login(client)
+    client.post("/admin/settings", data={"chat_url": "https://vk.me/custom"})
+    client.post(
+        "/admin/settings", data={"test_mode": "1", "test_trigger_phrase": "проверка"}
+    )
+    with sessions() as session:
+        values = db.read_settings(session)
+        assert values["chat_url"] == "https://vk.me/custom"
+        assert values["test_mode"] == "true"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "http://vk.me/test",
+        "vk.me/test",
+        "//vk.me/test",
+        "https://",
+        "https://user:password@vk.me/test",
+        "https://[broken",
+        "https://vk.me:99999/test",
+        "https://vk.me:0/test",
+        "https://vk.me/test name",
+        "https://vk.me/test\nother",
+        'https://vk.me/"test',
+        "https://vk.me/<test>",
+        "https://vk.me/\\test",
+        "https://vk.me/{chat_url}",
+        "https://vk.me/" + "a" * 500,
+    ],
+)
+def test_invalid_chat_url_preserves_all_settings(invitations, url):
+    client, sessions, _, _ = invitations
+    login(client)
+    with sessions() as session:
+        db.save_settings(
+            session, {"chat_url": "https://vk.me/previous", "test_mode": "true"}
+        )
+    result = client.post("/admin/settings", data={"chat_url": url})
+    assert "settings_error=chat_url" in str(result.url)
+    with sessions() as session:
+        values = db.read_settings(session)
+        assert values["chat_url"] == "https://vk.me/previous"
+        assert values["test_mode"] == "true"
+
+
+def test_chat_url_requires_login_and_csrf_accepts_html_form(invitations):
+    client, sessions, _, _ = invitations
+    r = client.post(
+        "/admin/settings",
+        data={"chat_url": "https://vk.me/test"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    login(client)
+    csrf = client.headers.pop("X-CSRF-Token")
+    for invalid in ("", "wrong", "неверный"):
+        r = client.post(
+            "/admin/settings",
+            data={"chat_url": "https://vk.me/test", "csrf_token": invalid},
+        )
+        assert r.status_code == 403
+    with sessions() as session:
+        assert "chat_url" not in db.read_settings(session)
+    r = client.post(
+        "/admin/settings", data={"chat_url": "https://vk.me/test", "csrf_token": csrf}
+    )
+    assert "saved=1" in str(r.url)
+    with sessions() as session:
+        assert db.read_settings(session)["chat_url"] == "https://vk.me/test"
+
+
+def test_chat_url_defaults_follow_group_and_invalid_legacy_value_is_safe(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(gifts, "get_settings", lambda: SimpleNamespace(vk_group_id=456))
+    assert gifts.resolve_chat_url({}) == "https://vk.me/club456"
+    assert (
+        gifts.resolve_chat_url({"chat_url": "javascript:alert(1)"})
+        == "https://vk.me/club456"
+    )
+    assert (
+        gifts.resolve_chat_url({"chat_url": "https://vk.me/other.project"})
+        == "https://vk.me/other.project"
+    )
+
+
 def test_claim_does_not_require_chat_enabled_or_reset_manager(invitations):
     client, sessions, _, sent = invitations
     invite(client, sessions)

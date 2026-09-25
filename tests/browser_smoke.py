@@ -180,6 +180,37 @@ def main():
         for section in ("chat", "settings", "stats", "clients"):
             page.goto("http://127.0.0.1:8765/admin?section=" + section)
             assert page.locator("h1").count() == 1
+        # Chat-link settings use a real HTML form/CSRF token on the isolated server.
+        page.goto("http://127.0.0.1:8765/admin?section=settings")
+        custom_chat_url = "https://vk.me/sarkisian.brand"
+        page.locator('[name="chat_url"]').fill(custom_chat_url)
+        page.get_by_role("button", name="Сохранить настройки", exact=True).click()
+        page.wait_for_url("**saved=1")
+        assert page.locator('[name="chat_url"]').input_value() == custom_chat_url
+        assert page.locator("#saved-chat-url").get_attribute("href") == custom_chat_url
+        page.screenshot(path=str(output / "chat-url-settings.png"), full_page=True)
+        page.set_viewport_size({"width": 390, "height": 844})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.screenshot(
+            path=str(output / "chat-url-settings-mobile.png"), full_page=True
+        )
+        page.set_viewport_size({"width": 1536, "height": 1024})
+        page.goto("http://127.0.0.1:8765/admin?section=campaigns")
+        assert (
+            page.locator(f'#invitation-settings a[href="{custom_chat_url}"]').count()
+            == 1
+        )
+        page.locator("#delivery-mode").select_option("chat_invite")
+        page.get_by_role("link", name="Изменить ссылку на чат →").click()
+        page.wait_for_url("**section=settings#chat-link-settings")
+        assert page.locator('[name="chat_url"]').input_value() == custom_chat_url
+        page.locator('[name="chat_url"]').fill("")
+        page.get_by_role("button", name="Сохранить настройки", exact=True).click()
+        page.wait_for_url("**saved=1")
+        assert (
+            page.locator("#saved-chat-url").get_attribute("href")
+            == "https://vk.me/club123"
+        )
         page.goto("http://127.0.0.1:8765/admin?section=chat")
         page.locator('[name="operator_user_id"]').fill("99, 100\n99")
         page.get_by_role("button", name="Сохранить настройки", exact=True).click()
