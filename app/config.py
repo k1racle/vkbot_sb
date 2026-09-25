@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     promo_attachments: str = ""
     allowed_post_ids: str = ""
     stop_words: str = ""
-    min_comment_length: int = 1
-    one_promo_per_user: bool = True
+    min_comment_length: str = "1"
+    one_promo_per_user: str = "true"
     log_level: str = "INFO"
     admin_username: str = "admin"
     admin_password: str

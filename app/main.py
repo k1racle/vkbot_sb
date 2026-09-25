@@ -163,7 +163,7 @@ async def vk_callback(request: Request) -> str:
         session.commit()
 
     try:
-        min_length = int(setting(values, "min_comment_length", settings.min_comment_length))
+        min_length = int(setting(values, "min_comment_length", settings.min_comment_length) or 1)
         if len(comment_text) < min_length:
             update_status(comment_id, "too_short")
             return "ok"
