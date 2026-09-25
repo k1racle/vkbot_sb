@@ -1,6 +1,7 @@
 services:
   vk-bot:
     build: .
+    container_name: vk-bot
     restart: unless-stopped
     environment:
       VK_API_VERSION: ${VK_API_VERSION}
