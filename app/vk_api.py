@@ -24,7 +24,9 @@ async def call(method: str, **params):
 
 
 async def is_group_member(user_id: int) -> bool:
-    result = await call("groups.isMember", group_id=get_settings().vk_group_id, user_id=user_id)
+    result = await call(
+        "groups.isMember", group_id=get_settings().vk_group_id, user_id=user_id
+    )
     return bool(result)
 
 
@@ -35,29 +37,30 @@ async def get_user_name(user_id: int) -> str:
     return "друг"
 
 
-async def send_message(user_id: int, text: str, random_id: int, attachment: str = "") -> None:
+async def send_message(
+    user_id: int,
+    text: str,
+    random_id: int,
+    attachment: str = "",
+    keyboard: dict | None = None,
+) -> None:
     params = {"user_id": user_id, "random_id": random_id, "message": text}
     if attachment.strip():
         params["attachment"] = attachment.strip()
+    if keyboard is not None:
+        params["keyboard"] = json.dumps(keyboard, ensure_ascii=False)
     await call("messages.send", **params)
 
 
-async def upload_file_for_message(user_id: int, path: Path, filename: str, content_type: str) -> str:
-    settings = get_settings()
+async def upload_file_for_message(
+    user_id: int, path: Path, filename: str, content_type: str
+) -> str:
     if content_type.startswith("image/"):
         server = await call("photos.getMessagesUploadServer", peer_id=user_id)
         field_name = "photo"
         save_method = "photos.saveMessagesPhoto"
-    elif content_type.startswith("video/"):
-        video = await call("video.save", name=filename, is_private=1)
-        upload_url = video["upload_url"]
-        field_name = "video"
-        async with httpx.AsyncClient(timeout=180) as client:
-            with path.open("rb") as file_handle:
-                response = await client.post(upload_url, files={field_name: (filename, file_handle, content_type)})
-        response.raise_for_status()
-        return f"video{video['owner_id']}_{video['video_id']}"
     else:
+        # video.save accepts user tokens only. Community bots send media as docs.
         server = await call("docs.getMessagesUploadServer", type="doc", peer_id=user_id)
         field_name = "file"
         save_method = "docs.save"

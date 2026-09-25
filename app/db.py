@@ -1,6 +1,16 @@
 from pathlib import Path
 
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, func, inspect, text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    func,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -48,11 +58,74 @@ class Campaign(Base):
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
 
+class Scenario(Base):
+    __tablename__ = "scenarios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(120), default="Новый сценарий")
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    published: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    version: Mapped[int] = mapped_column(default=0)
+    revision: Mapped[int] = mapped_column(default=0)
+    active: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[object] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    user_id: Mapped[int] = mapped_column(primary_key=True)
+    scenario_id: Mapped[int | None] = mapped_column(nullable=True)
+    version: Mapped[int] = mapped_column(default=0)
+    node_id: Mapped[str] = mapped_column(String(64), default="")
+    variables: Mapped[dict] = mapped_column(JSON, default=dict)
+    handoff: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[object] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DialogEvent(Base):
+    __tablename__ = "dialog_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True)
+    user_id: Mapped[int] = mapped_column(index=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="processing")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class MediaAsset(Base):
+    __tablename__ = "media_assets"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(120))
+    path: Mapped[str] = mapped_column(String(500))
+
+
+class PromoDelivery(Base):
+    __tablename__ = "promo_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(index=True)
+    campaign_id: Mapped[int] = mapped_column(index=True)
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
 def make_engine():
     settings = get_settings()
     if settings.database_url.startswith("sqlite:///./"):
         Path("data").mkdir(exist_ok=True)
-    connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+    connect_args = (
+        {"check_same_thread": False}
+        if settings.database_url.startswith("sqlite")
+        else {}
+    )
     return create_engine(settings.database_url, connect_args=connect_args)
 
 
@@ -76,15 +149,25 @@ def init_db() -> None:
         with engine.begin() as connection:
             for column, definition in additions.items():
                 if column not in existing:
-                    connection.execute(text(f"ALTER TABLE campaigns ADD COLUMN {column} {definition}"))
+                    connection.execute(
+                        text(f"ALTER TABLE campaigns ADD COLUMN {column} {definition}")
+                    )
 
 
 def already_processed(session: Session, comment_id: int) -> bool:
-    return session.query(ProcessedComment).filter_by(comment_id=comment_id).first() is not None
+    return (
+        session.query(ProcessedComment).filter_by(comment_id=comment_id).first()
+        is not None
+    )
 
 
 def already_sent_to_user(session: Session, user_id: int) -> bool:
-    return session.query(ProcessedComment).filter_by(user_id=user_id, status="sent").first() is not None
+    return (
+        session.query(ProcessedComment)
+        .filter_by(user_id=user_id, status="sent")
+        .first()
+        is not None
+    )
 
 
 def read_settings(session: Session) -> dict[str, str]:

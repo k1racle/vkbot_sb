@@ -4,7 +4,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     vk_api_version: str = "5.199"
     vk_group_id: int
@@ -41,7 +43,11 @@ class Settings(BaseSettings):
     def post_ids(self) -> set[int] | None:
         if not self.allowed_post_ids.strip():
             return None
-        return {int(value.strip()) for value in self.allowed_post_ids.split(",") if value.strip()}
+        return {
+            int(value.strip())
+            for value in self.allowed_post_ids.split(",")
+            if value.strip()
+        }
 
 
 @lru_cache

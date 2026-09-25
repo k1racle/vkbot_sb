@@ -1,0 +1,141 @@
+"""Run against the isolated local review server, never against the live bot."""
+
+import time
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    output = Path("data/review")
+    output.mkdir(parents=True, exist_ok=True)
+    errors = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": 1536, "height": 1024}, device_scale_factor=1
+        )
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.goto("http://127.0.0.1:8765/login")
+        page.screenshot(path=str(output / "login.png"), full_page=True)
+        page.locator('[name="username"]').fill("preview")
+        page.locator('[name="password"]').fill("preview-local-only")
+        page.locator('button[type="submit"]').click()
+        page.wait_for_url("**/admin")
+        page.locator("#new-flow").click()
+        page.locator('.flow-node[data-id="welcome"]').wait_for()
+        page.locator('.flow-node[data-id="welcome"] .node-heading').click()
+        # Moving a block at a scaled canvas must move its edges with it.
+        heading = page.locator('.flow-node[data-id="welcome"] .node-heading')
+        position = heading.bounding_box()
+        before = page.locator('.flow-node[data-id="welcome"]').evaluate(
+            "el=>parseFloat(el.style.left)"
+        )
+        page.mouse.move(position["x"] + 60, position["y"] + 12)
+        page.mouse.down()
+        page.mouse.move(position["x"] + 90, position["y"] + 32, steps=8)
+        page.mouse.up()
+        after = page.locator('.flow-node[data-id="welcome"]').evaluate(
+            "el=>parseFloat(el.style.left)"
+        )
+        assert after > before + 20
+        page.screenshot(path=str(output / "scenario.png"), full_page=True)
+        page.locator('#block-inspector [data-field="text"]').fill(
+            "Привет, {first_name}! Чем можем помочь?"
+        )
+        page.locator("#save-flow").click()
+        page.wait_for_function(
+            "document.querySelector('#dirty-state').textContent.includes('Все изменения')"
+        )
+        page.locator("#preview-flow").click()
+        page.locator("#preview-dialog[open]").wait_for()
+        page.get_by_text("Привет, Анна! Чем можем помочь?", exact=True).wait_for()
+        page.locator("#preview-buttons").get_by_text(
+            "Подобрать товар", exact=True
+        ).click()
+        page.get_by_text("Расскажите, что ищете?", exact=True).wait_for()
+        page.locator("#preview-text").fill("Интересует платье")
+        page.locator("#preview-form button").click()
+        page.get_by_text(
+            "Спасибо! Ваш запрос: Интересует платье. Передаю менеджеру.", exact=True
+        ).wait_for()
+        page.screenshot(path=str(output / "preview.png"), full_page=True)
+        page.locator("#close-preview").click()
+        page.locator("#publish-flow").click()
+        page.locator("#flow-status").get_by_text("Опубликован", exact=False).wait_for()
+        # Editing must still affect the current graph after save and publish.
+        page.locator('.flow-node[data-id="welcome"] .node-heading').click()
+        page.locator('#block-inspector [data-field="text"]').fill(
+            "После публикации — новый черновик"
+        )
+        page.locator("#save-flow").click()
+        page.wait_for_function(
+            "document.querySelector('#dirty-state').textContent.includes('Все изменения')"
+        )
+        page.reload()
+        page.locator('.flow-node[data-id="welcome"] .node-content').get_by_text(
+            "После публикации — новый черновик", exact=True
+        ).wait_for()
+        page.locator('.flow-node[data-id="welcome"] .node-heading').click()
+        page.locator('#block-inspector [data-field="text"]').fill(
+            "Привет, {first_name}! Рады видеть вас в SARKISIAN. Чем можем помочь?"
+        )
+        page.locator("#save-flow").click()
+        page.wait_for_function(
+            "document.querySelector('#dirty-state').textContent.includes('Все изменения')"
+        )
+        page.locator('[data-add="end"]').click()
+        page.locator("#validate-flow").click()
+        page.locator("#flow-errors").get_by_text(
+            "Завершение: блок не соединён со стартом.", exact=True
+        ).wait_for()
+        end_id = page.locator('.flow-node[data-kind="end"]').get_attribute("data-id")
+        # Draw a new connection by clicking an output then an input port.
+        page.locator('.flow-node[data-id="thanks"] [data-output="next"]').click()
+        page.locator(f'.flow-node[data-id="{end_id}"] [data-input]').click()
+        page.locator('.flow-node[data-id="thanks"] .node-heading').click()
+        assert (
+            page.locator('#block-inspector [data-field="next"]').input_value() == end_id
+        )
+        page.locator('#block-inspector [data-field="next"]').select_option("manager")
+        page.locator(f'.flow-node[data-id="{end_id}"] .node-heading').click()
+        page.locator("#delete-node").click()
+        page.locator("#save-flow").click()
+        page.wait_for_function(
+            "document.querySelector('#dirty-state').textContent.includes('Все изменения')"
+        )
+        page.goto("http://127.0.0.1:8765/admin?section=campaigns&new_campaign=1")
+        page.locator('[name="title"]').fill("Коллекция осень · тест интерфейса")
+        page.locator('[name="post_id"]').fill(str(int(time.time()) % 1000000000))
+        page.locator('[name="promo_code"]').fill("AUTUMN10")
+        page.locator('[name="shop_url"]').fill("https://sarkisianbrand.ru/")
+        page.locator('[name="promo_message"]').fill(
+            "Привет, {first_name}! Ваш промокод {promo_code}"
+        )
+        page.screenshot(path=str(output / "campaign.png"), full_page=True)
+        # No VK sends: only save local campaign data.
+        page.get_by_role("button", name="Сохранить кампанию", exact=True).click()
+        page.wait_for_url("**campaign*", wait_until="networkidle")
+        page.locator("#page-notice").get_by_text(
+            "Кампания сохранена.", exact=True
+        ).wait_for()
+        for section in ("chat", "settings", "stats", "clients"):
+            page.goto("http://127.0.0.1:8765/admin?section=" + section)
+            assert page.locator("h1").count() == 1
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto("http://127.0.0.1:8765/admin?section=scenarios")
+        page.locator('.flow-node[data-id="start"]').wait_for()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
+            "Mobile page overflows"
+        )
+        page.screenshot(path=str(output / "mobile.png"), full_page=True)
+        browser.close()
+    assert not errors, errors
+    print(
+        "Browser smoke passed: editor, save/publish, preview, validation, campaigns, sections, mobile."
+    )
+
+
+if __name__ == "__main__":
+    main()
