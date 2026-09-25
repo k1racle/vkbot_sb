@@ -29,6 +29,11 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/")
+async def root():
+    return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+
 def admin_required(request: Request) -> bool:
     return bool(request.session.get("admin_authenticated"))
 
