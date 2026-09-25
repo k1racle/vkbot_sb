@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     test_mode: str = "false"
     test_trigger_phrase: str = "тестовое сообщение"
     admin_test_user_id: str = ""
+    chat_enabled: str = "true"
+    chat_greeting: str = "Привет! Я бот магазина. Напишите, чем помочь."
+    operator_user_id: str = ""
+    operator_trigger_words: str = "оператор,менеджер,человек"
+    operator_ack: str = "Передал запрос менеджеру. Скоро с вами свяжутся."
     log_level: str = "INFO"
     admin_username: str = "admin"
     admin_password: str

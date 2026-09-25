@@ -25,7 +25,7 @@ from .vk_api import VkApiError, get_user_name, is_group_member, send_message, up
 settings = get_settings()
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
-app = FastAPI(title="VK Comment Promo Bot")
+app = FastAPI(title="VK Бот")
 templates = Jinja2Templates(directory="app/templates")
 app.add_middleware(SessionMiddleware, secret_key=settings.admin_session_secret, https_only=False, max_age=60 * 60 * 12)
 ATTACHMENT_DIR = Path("data")
@@ -84,7 +84,7 @@ async def logout(request: Request):
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_page(request: Request):
+async def admin_page(request: Request, campaign_id: int | None = None, new_campaign: bool = False):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     with SessionLocal() as session:
@@ -99,6 +99,7 @@ async def admin_page(request: Request):
         )
         recent = session.query(ProcessedComment).order_by(ProcessedComment.id.desc()).limit(30).all()
         campaigns = session.query(Campaign).order_by(Campaign.post_id.desc()).all()
+        selected_campaign = None if new_campaign else (session.get(Campaign, campaign_id) if campaign_id else (campaigns[0] if campaigns else None))
     form = {
         "promo_code": values.get("promo_code", settings.promo_code),
         "shop_url": values.get("shop_url", settings.shop_url),
@@ -112,10 +113,24 @@ async def admin_page(request: Request):
         "test_mode": as_bool(values.get("test_mode", str(settings.test_mode))),
         "test_trigger_phrase": values.get("test_trigger_phrase", settings.test_trigger_phrase),
         "admin_test_user_id": values.get("admin_test_user_id", settings.admin_test_user_id),
+        "chat_enabled": as_bool(values.get("chat_enabled", settings.chat_enabled)),
+        "chat_greeting": values.get("chat_greeting", settings.chat_greeting),
+        "operator_user_id": values.get("operator_user_id", settings.operator_user_id),
+        "operator_trigger_words": values.get("operator_trigger_words", settings.operator_trigger_words),
+        "operator_ack": values.get("operator_ack", settings.operator_ack),
+    }
+    campaign_form = {
+        "id": selected_campaign.id if selected_campaign else "",
+        "post_id": selected_campaign.post_id if selected_campaign else "",
+        "title": selected_campaign.title if selected_campaign else "",
+        "promo_code": selected_campaign.promo_code if selected_campaign else "",
+        "shop_url": selected_campaign.shop_url if selected_campaign else settings.shop_url,
+        "promo_message": selected_campaign.promo_message if selected_campaign else values.get("promo_message", settings.promo_message).replace("\\n", "\n"),
+        "enabled": selected_campaign.enabled if selected_campaign else True,
     }
     return templates.TemplateResponse(
         "admin.html",
-        {"request": request, "form": form, "stats": {"total": total, "sent": sent, "failed": failed, "status_counts": status_counts}, "recent": recent, "campaigns": campaigns},
+        {"request": request, "form": form, "campaign_form": campaign_form, "stats": {"total": total, "sent": sent, "failed": failed, "status_counts": status_counts}, "recent": recent, "campaigns": campaigns},
     )
 
 
@@ -132,6 +147,12 @@ async def update_admin_settings(
     one_promo_per_user: str | None = Form(None),
     test_mode: str | None = Form(None),
     test_trigger_phrase: str = Form("тестовое сообщение"),
+    admin_test_user_id: str = Form(""),
+    chat_enabled: str | None = Form(None),
+    chat_greeting: str = Form(""),
+    operator_user_id: str = Form(""),
+    operator_trigger_words: str = Form(""),
+    operator_ack: str = Form(""),
     attachment: UploadFile | None = File(None),
 ):
     if not admin_required(request):
@@ -147,6 +168,12 @@ async def update_admin_settings(
         "one_promo_per_user": "true" if one_promo_per_user else "false",
         "test_mode": "true" if test_mode else "false",
         "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
+        "admin_test_user_id": admin_test_user_id.strip(),
+        "chat_enabled": "true" if chat_enabled else "false",
+        "chat_greeting": chat_greeting.strip() or settings.chat_greeting,
+        "operator_user_id": operator_user_id.strip(),
+        "operator_trigger_words": operator_trigger_words.strip() or settings.operator_trigger_words,
+        "operator_ack": operator_ack.strip() or settings.operator_ack,
     }
     if attachment and attachment.filename:
         if not attachment.content_type:
@@ -251,7 +278,7 @@ async def save_campaign(
     return RedirectResponse("/admin?campaign_saved=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/admin/campaigns/{campaign_id}/delete")
+@app.api_route("/admin/campaigns/{campaign_id}/delete", methods=["GET", "POST"])
 async def delete_campaign(request: Request, campaign_id: int):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -263,7 +290,7 @@ async def delete_campaign(request: Request, campaign_id: int):
     return RedirectResponse("/admin?campaign_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@app.post("/admin/campaigns/{campaign_id}/toggle")
+@app.api_route("/admin/campaigns/{campaign_id}/toggle", methods=["GET", "POST"])
 async def toggle_campaign(request: Request, campaign_id: int):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -279,11 +306,11 @@ async def toggle_campaign(request: Request, campaign_id: int):
 async def test_send(request: Request):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-    user_id = int(settings.admin_test_user_id or 0)
-    if user_id <= 0:
-        return RedirectResponse("/admin?test_error=no_user", status_code=status.HTTP_303_SEE_OTHER)
     with SessionLocal() as session:
         values = read_settings(session)
+    user_id = int(values.get("admin_test_user_id", settings.admin_test_user_id) or 0)
+    if user_id <= 0:
+        return RedirectResponse("/admin?test_error=no_user", status_code=status.HTTP_303_SEE_OTHER)
     template = values.get("promo_message", settings.promo_message).replace("\\n", "\n")
     user_name = await get_user_name(user_id)
     text = template.format(
@@ -313,6 +340,9 @@ async def vk_callback(request: Request) -> str:
 
     if payload.get("type") == "confirmation":
         return settings.vk_confirmation_code
+    if payload.get("type") == "message_new":
+        await handle_new_message(payload)
+        return "ok"
     if payload.get("type") != "wall_reply_new":
         return "ok"
 
@@ -399,6 +429,34 @@ async def vk_callback(request: Request) -> str:
         logger.exception("Failed to process comment %s", comment_id)
 
     return "ok"
+
+
+async def handle_new_message(payload: dict) -> None:
+    obj = payload.get("object") or {}
+    user_id = int(obj.get("from_id", 0))
+    if user_id <= 0:
+        return
+    with SessionLocal() as session:
+        values = read_settings(session)
+    if not as_bool(values.get("chat_enabled", settings.chat_enabled)):
+        return
+    message_text = str(obj.get("text", "")).strip()
+    triggers = str(values.get("operator_trigger_words", settings.operator_trigger_words)).replace(",", "\n").splitlines()
+    wants_operator = any(word.strip().casefold() in message_text.casefold() for word in triggers if word.strip())
+    if wants_operator:
+        ack = values.get("operator_ack", settings.operator_ack)
+        await send_message(user_id, ack, random_id=int(obj.get("conversation_message_id", 0) or obj.get("id", 0)))
+        operator_id = int(values.get("operator_user_id", settings.operator_user_id) or 0)
+        if operator_id > 0:
+            name = await get_user_name(user_id)
+            notification = f"Запрос оператора от пользователя {name} (id{user_id}).\nСообщение: {message_text or '[без текста]'}"
+            try:
+                await send_message(operator_id, notification, random_id=-user_id)
+            except VkApiError:
+                logger.warning("Could not notify operator %s", operator_id)
+        return
+    greeting = values.get("chat_greeting", settings.chat_greeting)
+    await send_message(user_id, greeting, random_id=int(obj.get("conversation_message_id", 0) or obj.get("id", 0)))
 
 
 def update_status(comment_id: int, status: str, error: str | None = None) -> None:
