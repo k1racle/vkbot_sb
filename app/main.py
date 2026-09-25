@@ -27,6 +27,7 @@ from .db import (
 from .dialog import (
     CALLBACK_SLOTS,
     delivered,
+    handle_group_join,
     handle_message,
     handle_operator_reply,
     user_lock,
@@ -530,6 +531,9 @@ async def vk_callback(request: Request) -> str:
     if payload.get("type") == "message_reply":
         await handle_operator_reply(payload)
         return "ok"
+    if payload.get("type") == "group_join":
+        await handle_group_join(payload)
+        return "ok"
     comment = normalize_comment(payload, settings.vk_group_id)
     if comment is None:
         return "ok"
@@ -613,13 +617,15 @@ async def process_comment(comment: Comment) -> str:
                     update_status(event_key, "already_sent")
                     return "ok"
 
-        if not await is_group_member(user_id):
-            update_status(event_key, "not_member")
-            return "ok"
-
         if campaign.delivery_mode == "chat_invite":
+            # Non-members may earn a pending gift too. Membership is required
+            # when claiming it, not when opening the path into the chat.
             with SessionLocal() as session:
                 await invite_to_chat(session, comment, campaign)
+            return "ok"
+
+        if not await is_group_member(user_id):
+            update_status(event_key, "not_member")
             return "ok"
 
         template = campaign.promo_message

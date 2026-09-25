@@ -37,6 +37,15 @@ async def get_user_name(user_id: int) -> str:
     return "друг"
 
 
+async def is_messages_allowed(user_id: int) -> bool:
+    result = await call(
+        "messages.isMessagesFromGroupAllowed",
+        group_id=get_settings().vk_group_id,
+        user_id=user_id,
+    )
+    return isinstance(result, dict) and result.get("is_allowed") == 1
+
+
 async def reply_to_wall_comment(comment, message: str, guid: str) -> None:
     # video.createComment does not accept community tokens. Never silently post
     # to a wall with a video's numeric ID instead.

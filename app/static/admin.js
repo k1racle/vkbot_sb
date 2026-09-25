@@ -119,6 +119,8 @@ const statusNames = {
   post_filtered: "Другой пост",
   no_campaign: "Нет кампании",
   waiting_chat: "Ждём получения в чате",
+  waiting_subscription: "Ждём подписку",
+  waiting_permission: "Нужно разрешение на сообщения",
   invite_duplicate: "Приглашение уже создано",
   invite_unsupported: "Нельзя пригласить под видео",
   gift_unavailable: "Акция недоступна",
@@ -191,7 +193,7 @@ async function loadClients() {
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)
                 .join(
                   "",
-                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
+                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
       : '<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="/admin?section=scenarios">Открыть сценарии</a></div>';

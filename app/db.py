@@ -82,6 +82,7 @@ class PendingGift(Base):
         String(80), unique=True, nullable=True
     )
     status: Mapped[str] = mapped_column(String(24), default="pending")
+    awaiting_subscription: Mapped[bool] = mapped_column(default=False)
     invitation_text: Mapped[str] = mapped_column(Text, default="")
     delivery_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
@@ -173,6 +174,9 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 def init_db() -> None:
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
+    backfill_subscription = "awaiting_subscription" not in {
+        column["name"] for column in inspector.get_columns("pending_gifts")
+    }
     if "campaigns" in inspector.get_table_names():
         existing = {column["name"] for column in inspector.get_columns("campaigns")}
         additions = {
@@ -193,6 +197,9 @@ def init_db() -> None:
                     )
     # Additive upgrade: keep existing dialogs and campaigns intact.
     for table, additions in {
+        "pending_gifts": {
+            "awaiting_subscription": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
         "conversations": {
             "assigned_operator_id": "BIGINT",
             "assigned_at": "TIMESTAMP",
@@ -212,6 +219,22 @@ def init_db() -> None:
                     connection.execute(
                         text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                     )
+    if backfill_subscription:
+        # In the previous invitation release, a completed gift request with an
+        # outstanding gift meant membership was missing. Preserve those opt-ins;
+        # never arm gifts whose owners have only commented, not entered the chat.
+        with engine.begin() as connection:
+            connection.execute(
+                text("""
+                UPDATE pending_gifts SET awaiting_subscription = TRUE
+                WHERE status = 'pending' AND EXISTS (
+                    SELECT 1 FROM dialog_events e
+                    WHERE e.gift_id = pending_gifts.id
+                      AND e.user_id = pending_gifts.user_id
+                      AND e.kind = 'gift' AND e.status = 'done'
+                )
+            """)
+            )
     if "processed_comments" in inspect(engine).get_table_names():
         # Preserve the old table as an archive. Copy records and delivery history
         # once per event, with the same identity the new callback handler uses.

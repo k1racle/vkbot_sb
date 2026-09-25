@@ -1,8 +1,9 @@
 """Comment invitations and durable, user-bound gift claims.
 
 Callers hold the shared customer lock (and a PostgreSQL advisory transaction
-lock). Opening the public link is not consent: only an inbound private message
-can claim a gift. No identifiers supplied by the client select another user.
+lock). Opening the public link is not consent: a private gift request is required
+before delivery, including automatic delivery after joining the community.
+No identifiers supplied by the client select another user.
 """
 
 import hashlib
@@ -80,6 +81,23 @@ def gift_keyboard(label):
     }
 
 
+def subscription_keyboard():
+    keyboard = gift_keyboard("Проверить подписку")
+    keyboard["buttons"].insert(
+        0,
+        [
+            {
+                "action": {
+                    "type": "open_link",
+                    "label": "Подписаться на сообщество",
+                    "link": f"https://vk.ru/club{get_settings().vk_group_id}",
+                },
+            }
+        ],
+    )
+    return keyboard
+
+
 async def invite_to_chat(session, comment, campaign):
     record = (
         session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
@@ -113,7 +131,7 @@ async def invite_to_chat(session, comment, campaign):
     await vk_api.reply_to_wall_comment(comment, invitation, guid=gift.id)
 
 
-async def handle_gift_request(session, event, message, incoming):
+async def handle_gift_request(session, event, message, incoming, *, automatic=False):
     word = str(message.get("text", "")).strip().casefold()
     explicit = incoming.get("action") == "claim_gift" or (
         not incoming and word in {"подарок", "получить подарок", "/gift", "🎁 подарок"}
@@ -140,7 +158,8 @@ async def handle_gift_request(session, event, message, incoming):
         )
     if gift is None and not explicit:
         return False  # Ordinary Start still starts the configured dialog.
-    event.kind, event.text = "gift", str(message.get("text", ""))[:4000]
+    event.kind = "gift_join" if automatic else "gift"
+    event.text = str(message.get("text", ""))[:4000]
     event.gift_id = gift.id if gift else None
     session.add(event)
     if session.get(Conversation, event.user_id) is None:
@@ -152,6 +171,8 @@ async def handle_gift_request(session, event, message, incoming):
     )
 
     async def notice(text, keyboard=None):
+        if automatic:
+            return  # Join events must not generate unsolicited reminders.
         await vk_api.send_message(
             event.user_id,
             text,
@@ -160,6 +181,10 @@ async def handle_gift_request(session, event, message, incoming):
         )
 
     try:
+        if automatic and (gift is None or not gift.awaiting_subscription):
+            event.status = "done"
+            session.commit()
+            return True
         if gift is None:
             await notice(
                 "Пока нет подарков к получению. Оставьте подходящий комментарий под постом акции. "
@@ -180,6 +205,7 @@ async def handle_gift_request(session, event, message, incoming):
             keyboard = gift_keyboard("Следующий подарок") if more else None
             if not campaign or not campaign.enabled:
                 gift.status, gift.active_key = "cancelled", None
+                gift.awaiting_subscription = False
                 if record:
                     record.status = "gift_unavailable"
                 await notice(
@@ -190,6 +216,7 @@ async def handle_gift_request(session, event, message, incoming):
                 session, event.user_id, campaign
             ):
                 gift.status, gift.active_key = "cancelled", None
+                gift.awaiting_subscription = False
                 if record:
                     record.status = "already_sent"
                 await notice(
@@ -197,12 +224,27 @@ async def handle_gift_request(session, event, message, incoming):
                     keyboard,
                 )
             elif not await vk_api.is_group_member(event.user_id):
+                gift.awaiting_subscription = True
+                if record:
+                    record.status, record.error = "waiting_subscription", None
                 await notice(
-                    "Для получения подарка подпишитесь на сообщество: "
+                    "Ваш подарок уже ждёт 🎁 Чтобы получить его, подпишитесь на сообщество: "
                     f"https://vk.ru/club{get_settings().vk_group_id}\n"
-                    "Затем нажмите «Проверить подписку» или напишите «Подарок».",
-                    gift_keyboard("Проверить подписку"),
+                    "Когда VK сообщит нам о подписке, я отправлю промокод автоматически. "
+                    "Если сообщение задержится, нажмите «Проверить подписку».",
+                    subscription_keyboard(),
                 )
+            elif automatic and not await vk_api.is_messages_allowed(event.user_id):
+                # Consent can be revoked between Start and joining. Do not try
+                # to bypass it or consume the pending gift on this event.
+                event.status, event.error = (
+                    "waiting_permission",
+                    "Сообщения сообщества не разрешены",
+                )
+                if record:
+                    record.status, record.error = "waiting_permission", event.error
+                session.commit()
+                return True
             else:
                 # Once a send was attempted, keep the same content and random_id
                 # on retries, including retries triggered by a new user message.
@@ -236,6 +278,7 @@ async def handle_gift_request(session, event, message, incoming):
                     keyboard=keyboard,
                 )
                 gift.status, gift.active_key, gift.error = "sent", None, ""
+                gift.awaiting_subscription = False
                 session.add(
                     PromoDelivery(user_id=event.user_id, campaign_id=campaign.id)
                 )

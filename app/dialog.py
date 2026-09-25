@@ -18,6 +18,7 @@ from .db import (
     Conversation,
     DialogEvent,
     MediaAsset,
+    PendingGift,
     PromoDelivery,
     Scenario,
     SessionLocal,
@@ -515,3 +516,57 @@ async def handle_message(payload):
                 session.add(event)
                 session.commit()
                 raise
+
+
+async def handle_group_join(payload):
+    """Complete only an explicitly requested gift, never welcome all joiners."""
+    obj = payload.get("object")
+    if (
+        payload.get("type") != "group_join"
+        or numeric_id(payload.get("group_id")) != get_settings().vk_group_id
+        or not isinstance(obj, dict)
+        or obj.get("join_type") not in {"join", "accepted", "approved"}
+    ):
+        return  # A request/unsure response is not confirmed membership.
+    user_id = numeric_id(obj.get("user_id"))
+    event_id = payload.get("event_id")
+    if (
+        not 0 < user_id < 2_000_000_000
+        or not isinstance(event_id, (str, int))
+        or isinstance(event_id, bool)
+        or not event_id
+    ):
+        return
+    digest = hashlib.sha256(str(event_id).encode()).hexdigest()
+    key = f"group_join:{get_settings().vk_group_id}:{user_id}:{digest}"
+    async with user_lock(user_id), CALLBACK_SLOTS:
+        with SessionLocal() as session:
+            lock_conversation(session, user_id)
+            event = session.query(DialogEvent).filter_by(event_key=key).first()
+            if event and event.status == "done":
+                return
+            if event is None:
+                gift = (
+                    session.query(PendingGift)
+                    .filter_by(
+                        user_id=user_id, status="pending", awaiting_subscription=True
+                    )
+                    .order_by(PendingGift.created_at, PendingGift.id)
+                    .first()
+                )
+                if gift is None:
+                    return
+                event = DialogEvent(
+                    event_key=key,
+                    user_id=user_id,
+                    kind="gift_join",
+                    gift_id=gift.id,
+                )
+                session.add(event)
+            await handle_gift_request(
+                session,
+                event,
+                {"text": "Подписка: автоматическое получение подарка"},
+                {"action": "claim_gift"},
+                automatic=True,
+            )

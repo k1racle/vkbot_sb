@@ -170,10 +170,11 @@ def test_membership_rechecked_and_button_can_retry(invitations, monkeypatch):
     monkeypatch.setattr(vk_api, "is_group_member", AsyncMock(return_value=False))
     client.post("/vk/callback", json=message("Подарок"))
     assert "подпишитесь" in sent.call_args.args[1]
-    action = sent.call_args.kwargs["keyboard"]["buttons"][0][0]["action"]
+    action = sent.call_args.kwargs["keyboard"]["buttons"][-1][0]["action"]
     assert action["label"] == "Проверить подписку"
     with sessions() as session:
-        assert session.query(db.PendingGift).one().status == "pending"
+        gift = session.query(db.PendingGift).one()
+        assert gift.status == "pending" and gift.awaiting_subscription
     monkeypatch.setattr(vk_api, "is_group_member", AsyncMock(return_value=True))
     client.post(
         "/vk/callback",
@@ -293,8 +294,6 @@ def test_invite_filters_and_video_limitation(invitations, monkeypatch):
         comment(source="video", number=3),
     ):
         client.post("/vk/callback", json=data)
-    monkeypatch.setattr(main, "is_group_member", AsyncMock(return_value=False))
-    client.post("/vk/callback", json=comment(number=4))
     replies.assert_not_called()
     sent.assert_not_called()
     with sessions() as session:
@@ -303,7 +302,6 @@ def test_invite_filters_and_video_limitation(invitations, monkeypatch):
             "too_short",
             "stop_word",
             "invite_unsupported",
-            "not_member",
         }
 
 
@@ -397,3 +395,271 @@ def test_additive_upgrade_preserves_campaigns_and_dialog_events(setup):
         assert row.delivery_mode == "direct" and row.public_reply_variants == []
         event = session.query(db.DialogEvent).one()
         assert event.text == "hello" and event.gift_id is None
+
+
+def joined(user=77, number=1, join_type="join"):
+    return {
+        "type": "group_join",
+        "event_id": f"join-{user}-{number}",
+        "group_id": 123,
+        "secret": "test-secret",
+        "object": {"user_id": user, "join_type": join_type},
+    }
+
+
+@pytest.fixture
+def subscriptions(invitations, monkeypatch):
+    client, sessions, replies, sent = invitations
+    membership = AsyncMock(return_value=False)
+    allowed = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "is_group_member", membership)
+    monkeypatch.setattr(vk_api, "is_group_member", membership)
+    monkeypatch.setattr(vk_api, "is_messages_allowed", allowed)
+    return client, sessions, replies, sent, membership, allowed
+
+
+def test_nonmember_invited_then_start_join_sends_automatically(subscriptions):
+    client, sessions, replies, sent, member, allowed = subscriptions
+    invite(client, sessions)
+    assert replies.call_count == 1
+    sent.assert_not_called()
+    member.assert_not_called()  # Invitations no longer exclude non-members.
+    client.post("/vk/callback", json=message("", payload={"command": "start"}))
+    assert "подпишитесь" in sent.call_args.args[1]
+    buttons = sent.call_args.kwargs["keyboard"]["buttons"]
+    assert buttons[0][0]["action"]["link"] == "https://vk.ru/club123"
+    assert buttons[1][0]["action"]["label"] == "Проверить подписку"
+    with sessions() as session:
+        assert session.query(db.ProcessedComment).one().status == "waiting_subscription"
+        assert session.query(db.PendingGift).one().awaiting_subscription
+    db.init_db()  # Restart does not lose the wait or consent marker.
+    member.return_value = True
+    client.post("/vk/callback", json=joined())
+    assert sent.call_count == 2 and sent.call_args.args[1] == "Код ALL"
+    allowed.assert_awaited_once_with(77)
+    for body in (joined(), joined(number=2), message("", payload={"command": "start"})):
+        client.post("/vk/callback", json=body)
+    assert sent.call_count == 2
+    with sessions() as session:
+        gift = session.query(db.PendingGift).one()
+        assert gift.status == "sent" and not gift.awaiting_subscription
+        assert session.query(db.PromoDelivery).count() == 1
+        assert (
+            session.query(db.DialogEvent).filter_by(kind="gift_join").one().status
+            == "done"
+        )
+
+
+def test_join_never_sends_before_gift_request_or_without_comment(subscriptions):
+    client, sessions, _, sent, member, allowed = subscriptions
+    invite(client, sessions)
+    member.return_value = True
+    client.post("/vk/callback", json=joined())
+    client.post("/vk/callback", json=joined(user=88))
+    sent.assert_not_called()
+    allowed.assert_not_called()
+    with sessions() as session:
+        assert not session.query(db.PendingGift).one().awaiting_subscription
+    client.post("/vk/callback", json=message("Начать"))
+    assert sent.call_args.args[1] == "Код ALL"  # Join-before-Start order also works.
+
+
+def test_auto_delivery_preserves_manager_and_works_with_chat_disabled(subscriptions):
+    client, sessions, _, sent, member, _ = subscriptions
+    invite(client, sessions)
+    with sessions() as session:
+        session.add(
+            db.Conversation(
+                user_id=77,
+                handoff=True,
+                assigned_operator_id=99,
+                node_id="question",
+                variables={"size": "M"},
+            )
+        )
+        db.save_settings(session, {"chat_enabled": "false"})
+    client.post("/vk/callback", json=message("Начать"))
+    member.return_value = True
+    client.post("/vk/callback", json=joined())
+    assert sent.call_args.args[1] == "Код ALL"
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.handoff and row.assigned_operator_id == 99
+        assert row.node_id == "question" and row.variables == {"size": "M"}
+    login(client)
+    assert "group_join" in client.get("/admin?section=campaigns").text
+    assert "sent" in client.get("/admin?section=stats").text
+
+
+def test_start_without_comment_never_creates_or_arms_a_gift(subscriptions):
+    client, sessions, _, sent, member, allowed = subscriptions
+    campaign(sessions, delivery_mode="chat_invite")
+    client.post("/vk/callback", json=message("Начать"))
+    assert sent.call_count == 1 and sent.call_args.args[1] != "Код ALL"
+    member.return_value = True
+    client.post("/vk/callback", json=joined())
+    assert sent.call_count == 1
+    allowed.assert_not_called()
+    with sessions() as session:
+        assert session.query(db.PendingGift).count() == 0
+
+
+@pytest.mark.parametrize("join_type", ["request", "unsure", "invalid"])
+def test_unconfirmed_join_does_not_deliver(subscriptions, join_type):
+    client, sessions, _, sent, member, allowed = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    sent.reset_mock()
+    member.return_value = True
+    client.post("/vk/callback", json=joined(join_type=join_type))
+    sent.assert_not_called()
+    allowed.assert_not_called()
+    with sessions() as session:
+        assert session.query(db.PendingGift).one().status == "pending"
+    client.post("/vk/callback", json=joined(number=2, join_type="approved"))
+    assert sent.call_args.args[1] == "Код ALL"
+
+
+@pytest.mark.parametrize(
+    "field,value", [("group_id", 999), ("secret", "wrong"), ("event_id", None)]
+)
+def test_invalid_join_cannot_trigger_delivery(subscriptions, field, value):
+    client, sessions, _, sent, member, _ = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    member.return_value = True
+    body = joined()
+    body[field] = value
+    client.post("/vk/callback", json=body)
+    assert sent.call_count == 1
+    with sessions() as session:
+        assert session.query(db.PendingGift).one().status == "pending"
+
+
+def test_join_rechecks_membership_and_consent(subscriptions):
+    client, sessions, _, sent, member, allowed = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    client.post("/vk/callback", json=joined())  # Left again or stale event.
+    assert sent.call_count == 1
+    member.return_value = True
+    allowed.return_value = False
+    client.post("/vk/callback", json=joined(number=2))
+    assert sent.call_count == 1
+    with sessions() as session:
+        assert session.query(db.PendingGift).one().status == "pending"
+        assert session.query(db.ProcessedComment).one().status == "waiting_permission"
+    # New explicit inbound request can retry after the user enables messages.
+    client.post("/vk/callback", json=message("Подарок", number=2))
+    assert sent.call_args.args[1] == "Код ALL"
+
+
+@pytest.mark.parametrize("change", ["disable", "delete", "delivered"])
+def test_join_respects_campaign_and_history_without_extra_notices(
+    subscriptions, change
+):
+    client, sessions, _, sent, member, _ = subscriptions
+    ident = invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    with sessions() as session:
+        row = session.get(db.Campaign, ident)
+        if change == "disable":
+            row.enabled = False
+        elif change == "delete":
+            session.delete(row)
+        else:
+            session.add(db.PromoDelivery(user_id=77, campaign_id=ident))
+        session.commit()
+    member.return_value = True
+    client.post("/vk/callback", json=joined())
+    assert sent.call_count == 1
+    with sessions() as session:
+        assert session.query(db.PendingGift).one().status == "cancelled"
+
+
+def test_failed_auto_send_keeps_payload_and_old_event_cannot_claim_next(subscriptions):
+    client, sessions, _, sent, member, _ = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    member.return_value = True
+    sent.side_effect = vk_api.VkApiError("6: Too many requests")
+    with pytest.raises(vk_api.VkApiError):
+        client.post("/vk/callback", json=joined())
+    nonce = sent.call_args.kwargs["random_id"]
+    sent.side_effect = None
+    client.post("/vk/callback", json=message("Подарок", number=2))
+    assert sent.call_args.kwargs["random_id"] == nonce
+    campaign(sessions, post_id=888, delivery_mode="chat_invite")
+    client.post("/vk/callback", json=comment(object_id=888, number=2))
+    member.return_value = False
+    client.post("/vk/callback", json=message("Подарок", number=3))
+    member.return_value = True
+    before = sent.call_count
+    client.post("/vk/callback", json=joined())
+    assert sent.call_count == before
+    with sessions() as session:
+        assert (
+            session.query(db.PendingGift)
+            .filter_by(status="pending", awaiting_subscription=True)
+            .count()
+            == 1
+        )
+
+
+def test_parallel_join_and_button_only_send_once(subscriptions):
+    client, sessions, _, sent, member, _ = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=message("Начать"))
+    member.return_value = True
+
+    async def dispatch():
+        requests = []
+        for body in (joined(), message("Подарок", number=2), joined()):
+            request = AsyncMock()
+            request.json.return_value = body
+            requests.append(main.vk_callback(request))
+        await asyncio.gather(*requests)
+
+    asyncio.run(dispatch())
+    assert sum(call.args[1] == "Код ALL" for call in sent.call_args_list) == 1
+    with sessions() as session:
+        assert session.query(db.PromoDelivery).count() == 1
+
+
+def test_upgrade_restores_only_previous_explicit_gift_requests(subscriptions):
+    client, sessions, _, _, _, _ = subscriptions
+    invite(client, sessions)
+    client.post("/vk/callback", json=comment(user=88, number=2))
+    client.post("/vk/callback", json=message("Начать"))
+    with db.engine.begin() as connection:
+        connection.execute(
+            text("ALTER TABLE pending_gifts DROP COLUMN awaiting_subscription")
+        )
+    db.init_db()
+    db.init_db()
+    with sessions() as session:
+        assert (
+            session.query(db.PendingGift)
+            .filter_by(user_id=77)
+            .one()
+            .awaiting_subscription
+        )
+        assert (
+            not session.query(db.PendingGift)
+            .filter_by(user_id=88)
+            .one()
+            .awaiting_subscription
+        )
+
+
+@pytest.mark.parametrize(
+    "response,allowed",
+    [({"is_allowed": 1}, True), ({"is_allowed": 0}, False), ({}, False)],
+)
+def test_messages_permission_api(setup, monkeypatch, response, allowed):
+    api = AsyncMock(return_value=response)
+    monkeypatch.setattr(vk_api, "call", api)
+    assert asyncio.run(vk_api.is_messages_allowed(77)) == allowed
+    api.assert_awaited_once_with(
+        "messages.isMessagesFromGroupAllowed", group_id=123, user_id=77
+    )
