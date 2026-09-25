@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     stop_words: str = ""
     min_comment_length: str = "1"
     one_promo_per_user: str = "true"
+    test_mode: str = "false"
+    test_trigger_phrase: str = "тестовое сообщение"
     log_level: str = "INFO"
     admin_username: str = "admin"
     admin_password: str

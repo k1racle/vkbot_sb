@@ -102,6 +102,8 @@ async def admin_page(request: Request):
         "stop_words": values.get("stop_words", settings.stop_words),
         "min_comment_length": values.get("min_comment_length", str(settings.min_comment_length)),
         "one_promo_per_user": as_bool(values.get("one_promo_per_user", str(settings.one_promo_per_user))),
+        "test_mode": as_bool(values.get("test_mode", str(settings.test_mode))),
+        "test_trigger_phrase": values.get("test_trigger_phrase", settings.test_trigger_phrase),
     }
     return templates.TemplateResponse(
         "admin.html",
@@ -120,6 +122,8 @@ async def update_admin_settings(
     stop_words: str = Form(""),
     min_comment_length: int = Form(1),
     one_promo_per_user: str | None = Form(None),
+    test_mode: str | None = Form(None),
+    test_trigger_phrase: str = Form("тестовое сообщение"),
     attachment: UploadFile | None = File(None),
 ):
     if not admin_required(request):
@@ -133,6 +137,8 @@ async def update_admin_settings(
         "stop_words": stop_words.strip(),
         "min_comment_length": str(max(0, min_comment_length)),
         "one_promo_per_user": "true" if one_promo_per_user else "false",
+        "test_mode": "true" if test_mode else "false",
+        "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
     }
     if attachment and attachment.filename:
         if not attachment.content_type:
@@ -239,6 +245,12 @@ async def vk_callback(request: Request) -> str:
         session.commit()
 
     try:
+        test_enabled = as_bool(setting(values, "test_mode", settings.test_mode))
+        test_phrase = str(setting(values, "test_trigger_phrase", settings.test_trigger_phrase)).strip().casefold()
+        if test_enabled and test_phrase not in comment_text.casefold():
+            update_status(comment_id, "test_filtered")
+            return "ok"
+
         min_length = int(setting(values, "min_comment_length", settings.min_comment_length) or 1)
         if len(comment_text) < min_length:
             update_status(comment_id, "too_short")
