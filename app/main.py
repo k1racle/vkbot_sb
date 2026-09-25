@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from .config import get_settings
 from .db import (
+    Campaign,
     ProcessedComment,
     SessionLocal,
     already_processed,
@@ -91,7 +92,13 @@ async def admin_page(request: Request):
         total = session.query(func.count(ProcessedComment.id)).scalar() or 0
         sent = session.query(func.count(ProcessedComment.id)).filter_by(status="sent").scalar() or 0
         failed = session.query(func.count(ProcessedComment.id)).filter_by(status="failed").scalar() or 0
+        status_counts = dict(
+            session.query(ProcessedComment.status, func.count(ProcessedComment.id))
+            .group_by(ProcessedComment.status)
+            .all()
+        )
         recent = session.query(ProcessedComment).order_by(ProcessedComment.id.desc()).limit(30).all()
+        campaigns = session.query(Campaign).order_by(Campaign.post_id.desc()).all()
     form = {
         "promo_code": values.get("promo_code", settings.promo_code),
         "shop_url": values.get("shop_url", settings.shop_url),
@@ -104,10 +111,11 @@ async def admin_page(request: Request):
         "one_promo_per_user": as_bool(values.get("one_promo_per_user", str(settings.one_promo_per_user))),
         "test_mode": as_bool(values.get("test_mode", str(settings.test_mode))),
         "test_trigger_phrase": values.get("test_trigger_phrase", settings.test_trigger_phrase),
+        "admin_test_user_id": values.get("admin_test_user_id", settings.admin_test_user_id),
     }
     return templates.TemplateResponse(
         "admin.html",
-        {"request": request, "form": form, "stats": {"total": total, "sent": sent, "failed": failed}, "recent": recent},
+        {"request": request, "form": form, "stats": {"total": total, "sent": sent, "failed": failed, "status_counts": status_counts}, "recent": recent, "campaigns": campaigns},
     )
 
 
@@ -217,6 +225,66 @@ async def delete_admin_attachment(request: Request):
     return RedirectResponse("/admin?attachment_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@app.post("/admin/campaigns")
+async def save_campaign(
+    request: Request,
+    post_id: int = Form(...),
+    title: str = Form(""),
+    promo_code: str = Form(...),
+    shop_url: str = Form(...),
+    promo_message: str = Form(...),
+    enabled: str | None = Form(None),
+):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        campaign = session.query(Campaign).filter_by(post_id=post_id).first()
+        if campaign is None:
+            campaign = Campaign(post_id=post_id)
+            session.add(campaign)
+        campaign.title = title.strip() or f"Пост {post_id}"
+        campaign.promo_code = promo_code.strip()
+        campaign.shop_url = shop_url.strip()
+        campaign.promo_message = promo_message
+        campaign.enabled = bool(enabled)
+        session.commit()
+    return RedirectResponse("/admin?campaign_saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/campaigns/{campaign_id}/delete")
+async def delete_campaign(request: Request, campaign_id: int):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if campaign:
+            session.delete(campaign)
+            session.commit()
+    return RedirectResponse("/admin?campaign_deleted=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/admin/test-send")
+async def test_send(request: Request):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    user_id = int(settings.admin_test_user_id or 0)
+    if user_id <= 0:
+        return RedirectResponse("/admin?test_error=no_user", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        values = read_settings(session)
+    template = values.get("promo_message", settings.promo_message).replace("\\n", "\n")
+    text = template.format(promo_code=values.get("promo_code", settings.promo_code), shop_url=values.get("shop_url", settings.shop_url))
+    attachment = values.get("promo_attachments", settings.promo_attachments)
+    attachment_path = values.get("attachment_path", "")
+    if attachment_path and Path(attachment_path).exists():
+        attachment = await upload_file_for_message(user_id, Path(attachment_path), values.get("attachment_name", "attachment"), values.get("attachment_type", "application/octet-stream"))
+    try:
+        await send_message(user_id, text, random_id=-1, attachment=attachment)
+    except VkApiError:
+        return RedirectResponse("/admin?test_error=vk", status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse("/admin?test_sent=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post("/vk/callback", response_class=PlainTextResponse)
 async def vk_callback(request: Request) -> str:
     payload = await request.json()
@@ -239,12 +307,16 @@ async def vk_callback(request: Request) -> str:
         return "ok"
     with SessionLocal() as session:
         values = read_settings(session)
+        campaign = session.query(Campaign).filter_by(post_id=post_id).first()
         if already_processed(session, comment_id):
             return "ok"
         session.add(ProcessedComment(comment_id=comment_id, post_id=post_id, user_id=user_id))
         session.commit()
 
     try:
+        if campaign is not None and not campaign.enabled:
+            update_status(comment_id, "campaign_disabled")
+            return "ok"
         test_enabled = as_bool(setting(values, "test_mode", settings.test_mode))
         test_phrase = str(setting(values, "test_trigger_phrase", settings.test_trigger_phrase)).strip().casefold()
         if test_enabled and test_phrase not in comment_text.casefold():
@@ -272,6 +344,8 @@ async def vk_callback(request: Request) -> str:
                     return "ok"
 
         post_ids = values.get("allowed_post_ids", settings.allowed_post_ids).strip()
+        if campaign is not None:
+            post_ids = ""
         if post_ids and post_id not in {int(value.strip()) for value in post_ids.split(",") if value.strip()}:
             update_status(comment_id, "post_filtered")
             return "ok"
@@ -279,10 +353,10 @@ async def vk_callback(request: Request) -> str:
             update_status(comment_id, "not_member")
             return "ok"
 
-        template = values.get("promo_message", settings.promo_message).replace("\\n", "\n")
+        template = (campaign.promo_message if campaign else values.get("promo_message", settings.promo_message)).replace("\\n", "\n")
         text = template.format(
-            promo_code=values.get("promo_code", settings.promo_code),
-            shop_url=values.get("shop_url", settings.shop_url),
+            promo_code=campaign.promo_code if campaign else values.get("promo_code", settings.promo_code),
+            shop_url=campaign.shop_url if campaign else values.get("shop_url", settings.shop_url),
         )
         attachments = values.get("promo_attachments", settings.promo_attachments)
         attachment_path = values.get("attachment_path", "")

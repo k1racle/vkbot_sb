@@ -29,6 +29,19 @@ class BotSetting(Base):
     value: Mapped[str] = mapped_column(Text, default="")
 
 
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    post_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(120), default="")
+    promo_code: Mapped[str] = mapped_column(String(120), default="")
+    shop_url: Mapped[str] = mapped_column(String(500), default="")
+    promo_message: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
 def make_engine():
     settings = get_settings()
     if settings.database_url.startswith("sqlite:///./"):

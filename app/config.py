@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     one_promo_per_user: str = "true"
     test_mode: str = "false"
     test_trigger_phrase: str = "тестовое сообщение"
+    admin_test_user_id: str = ""
     log_level: str = "INFO"
     admin_username: str = "admin"
     admin_password: str
