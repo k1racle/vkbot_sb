@@ -121,15 +121,11 @@ small,
   color: var(--ink);
 }
 .brand-mark {
-  display: grid;
-  place-items: center;
-  width: 43px;
-  height: 43px;
-  border-radius: 13px;
-  background: var(--green);
-  color: white;
-  font-size: 24px;
-  font-weight: 600;
+  display: block;
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 .brand small {
   display: block;
@@ -806,6 +802,13 @@ th {
   border-color: #89ae92;
   color: var(--green);
 }
+.palette-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
+.palette-group + .palette-group { border-top: 1px solid var(--line); padding-top: 9px; }
+.palette-group > span { min-width: 105px; }
+.flow-node[data-kind="contact"] .node-symbol { background: #e8f1fb; color: #537ba6; }
+.flow-node[data-kind="set_variable"] .node-symbol { background: #f4eddd; color: #9c7733; }
+.flow-node[data-kind="variable_condition"] .node-symbol { background: #f4e9d9; color: #a57a32; }
+.flow-node[data-kind="random"] .node-symbol { background: #f0e9fa; color: #8a64ae; }
 .flow-canvas {
   overflow: auto;
   position: relative;
@@ -1346,10 +1349,8 @@ a:focus-visible {
     border-bottom: 1px solid var(--line);
   }
   .sidebar .brand-mark {
-    width: 33px;
-    height: 33px;
-    font-size: 19px;
-    border-radius: 9px;
+    width: 38px;
+    height: 38px;
   }
   .side-nav {
     display: flex;

@@ -4,7 +4,6 @@ import re
 import secrets
 from urllib.parse import urlsplit, urlunsplit
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
@@ -17,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from . import projects
 from .clients import defer_outgoing_audits
 from .config import get_settings
+from .project_names import GroupLookupError, fetch_group, save_name
 
 templates = Jinja2Templates(directory="app/templates")
 router = APIRouter()
@@ -149,13 +149,18 @@ class ProjectMiddleware:
 
 def project_page(request, error=None, notice=None, code=200):
     request.session.setdefault("csrf", secrets.token_urlsafe(32))
+    # The middleware snapshot precedes POST mutations. Render the selector from
+    # the same fresh list as the cards, including connection/name checks.
+    request.state.projects = [
+        projects.public_project(p) for p in projects.list_projects()
+    ]
     return templates.TemplateResponse(
         "projects.html",
         {
             "request": request,
             "section": "projects",
             "csrf": request.session["csrf"],
-            "projects": [projects.public_project(p) for p in projects.list_projects()],
+            "projects": request.state.projects,
             "deleted_projects": [
                 projects.public_project(p)
                 for p in projects.list_projects(include_deleted=True)
@@ -240,75 +245,49 @@ async def check_project(project_id: int, request: Request):
     try:
         project = projects.get_project(project_id)
     except ValueError:
-        raise HTTPException(404, "Проект не найден")
+        raise HTTPException(404, "Проект не найден") from None
     if project is None:
         raise HTTPException(404, "Проект не найден")
-    with projects.project_scope(project):
-        settings = get_settings()
-        if not settings.vk_group_token:
-            return project_page(
-                request, error="Сначала сохраните токен сообщества.", code=422
-            )
-        try:
-            # No group_id: VK returns the community which OWNS this token, not
-            # arbitrary public information about a user-supplied group ID.
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(
-                    "https://api.vk.com/method/groups.getById",
-                    data={
-                        "access_token": settings.vk_group_token,
-                        "v": settings.vk_api_version,
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-            result = payload.get("response", {})
-            groups = result.get("groups", []) if isinstance(result, dict) else result
-            group = (
-                next(
-                    (
-                        g
-                        for g in groups
-                        if isinstance(g, dict) and g.get("id") == project.group_id
-                    ),
-                    None,
-                )
-                if isinstance(groups, list)
-                else None
-            )
-            if not group:
-                return project_page(
-                    request,
-                    error="VK не подтвердил принадлежность токена этой группе. Проверьте ID и ключ.",
-                    code=422,
-                )
-        except (httpx.HTTPError, ValueError):
-            return project_page(
-                request,
-                error="Не удалось проверить подключение к VK. Повторите позже.",
-                code=422,
-            )
+    try:
+        group = await fetch_group(project, owner=True)
+    except GroupLookupError as error:
+        return project_page(request, error=str(error), code=422)
     form = await request.form()
-    refresh_name = form.get("refresh_name") == "1"
-    # Custom names are preserved by ordinary connection checks. Explicit name
-    # refresh deliberately replaces them, only after verifying token ownership.
-    group_name = str(group.get("name") or "").strip()
-    renamed = False
-    if group_name and (refresh_name or project.name == f"VK {project.group_id}"):
-        current = projects.get_project(project.id)
-        if (
-            current
-            and current.token == project.token
-            and (refresh_name or current.name == project.name)
-        ):
-            projects.update_project(project.id, name=group_name[:120])
-            renamed = True
-    return project_page(
-        request,
-        notice=(f"Название обновлено: {group_name[:120]}. " if renamed else "")
-        + "Токен относится к указанной группе. Это не проверка прав отправки и настройки Callback API."
-        + (" VK не вернул название группы." if refresh_name and not group_name else ""),
-    )
+    notice = "Токен относится к указанной группе. Это не проверка прав отправки и настройки Callback API."
+    if form.get("refresh_name") == "1" or project.name == f"VK {project.group_id}":
+        try:
+            updated = save_name(project, group, force=form.get("refresh_name") == "1")
+            if updated.name != project.name:
+                notice = f"Название обновлено: {updated.name}. " + notice
+        except ValueError as error:
+            notice += " " + str(error)
+    return project_page(request, notice=notice)
+
+
+@router.post("/projects/{project_id}/name", dependencies=[Depends(protect_admin_form)])
+async def refresh_project_name(project_id: int, request: Request):
+    if not request.session.get("admin_authenticated"):
+        raise HTTPException(401, "Войдите в панель управления")
+    try:
+        project = projects.get_project(project_id)
+    except ValueError:
+        raise HTTPException(404, "Проект не найден") from None
+    if project is None:
+        raise HTTPException(404, "Проект не найден")
+    form = await request.form()
+    automatic = form.get("automatic") == "1"
+    # Automatic lookups leave the administrator's own name untouched.
+    if automatic and project.name != f"VK {project.group_id}":
+        return {"project": projects.public_project(project), "updated": False}
+    try:
+        group = await fetch_group(project)
+        updated = save_name(project, group, force=not automatic)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    return {
+        "project": projects.public_project(updated),
+        "updated": updated.name != project.name,
+    }
 
 
 @router.post(

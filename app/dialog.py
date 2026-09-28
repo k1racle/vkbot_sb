@@ -11,7 +11,7 @@ import httpx
 from sqlalchemy import text as sql_text
 from sqlalchemy import update
 
-from . import vk_api
+from . import clients, vk_api
 from .clients import ensure_client, record_incoming
 from .config import get_settings
 from .db import (
@@ -93,6 +93,12 @@ class LivePort:
 
     def nonce(self, step):
         return hashlib.sha256(f"{self.event_key}:{step}".encode()).hexdigest()[:16]
+
+    async def save_contact(self, kind, value):
+        if kind == "phone":
+            client = clients.ensure_client(self.session, self.user_id)
+            if client:
+                client.phone, client.phone_source = value, "dialog"
 
     async def emit(
         self,

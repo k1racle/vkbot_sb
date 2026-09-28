@@ -134,7 +134,9 @@ def save_profile(session, profile):
     phone = clean_phone(profile.get("mobile_phone")) or clean_phone(
         profile.get("home_phone")
     )
-    if phone:
+    if client.phone_source == "dialog" and clean_phone(client.phone):
+        pass  # A volunteered contact takes precedence over an older VK profile.
+    elif phone:
         client.phone, client.phone_source = phone, "vk"
     elif client.phone_source == "vk":
         client.phone, client.phone_source = "", ""  # Do not retain a now-hidden number.

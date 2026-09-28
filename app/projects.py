@@ -629,6 +629,23 @@ def create_project(
         ) from None
 
 
+def update_fetched_name(project: Project, name: str, *, force=False) -> Project:
+    """Compare-and-set after VK I/O; never overwrite an intervening manual edit."""
+    with _registry_write() as session:
+        cipher = _checked_cipher(session)
+        row = session.get(_ProjectRow, project.id)
+        if row is None or row.is_deleted:
+            raise ProjectNotFoundError("Проект не найден.")
+        if (
+            row.encrypted_token == project.encrypted_token
+            and row.name == project.name
+            and (force or row.name == f"VK {row.group_id}")
+        ):
+            row.name = _validate_name(name)
+            session.flush()
+        return _to_project(row, cipher)
+
+
 def update_project(
     project_id: int,
     *,

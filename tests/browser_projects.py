@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 import uvicorn
+import httpx
+from urllib.parse import parse_qs
 from playwright.sync_api import sync_playwright
 
 
@@ -38,6 +40,23 @@ def main():
 
     vk_api.call = no_vk
     vk_api._request = no_vk
+
+    async def fake_group_info(_transport, request):
+        assert str(request.url) == "https://api.vk.com/method/groups.getById"
+        params = parse_qs((await request.aread()).decode())
+        group_id = int(params.get("group_id", [123])[0])
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "groups": [{"id": group_id, "name": f"Группа VK {group_id}"}]
+                }
+            },
+            request=request,
+        )
+
+    original_transport = httpx.AsyncHTTPTransport.handle_async_request
+    httpx.AsyncHTTPTransport.handle_async_request = fake_group_info
     server = uvicorn.Server(
         uvicorn.Config(
             application.app, host="127.0.0.1", port=8766, log_level="warning"
@@ -61,10 +80,31 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.on("dialog", lambda dialog: dialog.accept())
             page.goto("http://127.0.0.1:8766/login")
+            assert page.locator("img.brand-mark").evaluate(
+                "img => img.complete && img.naturalWidth > 0"
+            )
+            assert page.locator('link[rel="icon"]').get_attribute("href") == (
+                "/static/vk-bot-logo-v1.png"
+            )
+            assert page.request.get(
+                "http://127.0.0.1:8766/static/vk-bot-logo-v1.png"
+            ).status == 200
+            page.screenshot(path=str(output / "logo-login.png"), full_page=True)
             page.locator('[name="username"]').fill("preview")
             page.locator('[name="password"]').fill("preview-only")
             page.locator('button[type="submit"]').click()
             page.wait_for_url("**/projects")
+            page.locator("#project-title-1").get_by_text(
+                "Группа VK 123", exact=True
+            ).wait_for()
+            assert (
+                page.locator('#project-select option[value="/p/1/admin"]').inner_text()
+                == "Группа VK 123"
+            )
+            assert page.locator("img.brand-mark").evaluate(
+                "img => img.complete && img.naturalWidth > 0"
+            )
+            assert "VK BOT" in page.locator(".brand").inner_text()
             form = page.locator('form[action="/projects"]')
             form.locator('[name="name"]').fill("Вторая группа")
             form.locator('[name="group_id"]').fill("456")
@@ -76,6 +116,9 @@ def main():
             page.wait_for_url("**/p/1/admin")
             page.locator("#new-flow").click()
             page.locator('.flow-node[data-id="welcome"]').wait_for()
+            from tests.browser_modules import exercise_modules
+
+            exercise_modules(page, output)
             # The same browser cookie in another tab cannot switch this tab's API.
             other = context.new_page()
             other.on("pageerror", lambda error: errors.append(str(error)))
@@ -159,14 +202,16 @@ def main():
             page.locator("#delete-flow").click()
             page.locator("#flow-empty").wait_for(state="visible")
             page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
-            page.locator('[data-kind="scenario"]').click()
-            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            page.locator('[data-kind="scenario"][data-id="1"]').click()
+            page.locator('[data-kind="scenario"][data-id="1"]').wait_for(
+                state="detached"
+            )
             page.goto("http://127.0.0.1:8766/p/1/admin?section=campaigns")
             page.get_by_role("button", name="Удалить кампанию", exact=True).click()
             page.wait_for_url("**/*campaign_deleted=1*")
             page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
             page.locator('[data-kind="campaign"]').click()
-            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            page.locator('[data-kind="campaign"]').wait_for(state="detached")
             with (
                 projects.project_scope(projects.get_project(1)),
                 db.SessionLocal() as session,
@@ -203,7 +248,7 @@ def main():
             ).wait_for()
             page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
             page.locator('[data-kind="broadcast"]').click()
-            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            page.locator('[data-kind="broadcast"]').wait_for(state="detached")
             page.goto("http://127.0.0.1:8766/projects")
             page.locator("#project-2").get_by_text("Удалить проект", exact=True).click()
             delete_form = page.locator('form[action="/projects/2/delete"]')
@@ -219,6 +264,11 @@ def main():
             mobile = context.new_page()
             mobile.set_viewport_size({"width": 390, "height": 844})
             mobile.goto("http://127.0.0.1:8766/projects")
+            assert mobile.locator("img.brand-mark").is_visible()
+            assert mobile.locator("img.brand-mark").evaluate(
+                "img => img.complete && img.naturalWidth > 0"
+            )
+            mobile.screenshot(path=str(output / "logo-mobile.png"), full_page=True)
             assert mobile.locator("#project-select").is_visible()
             assert mobile.evaluate(
                 "document.documentElement.scrollWidth <= innerWidth + 1"
@@ -241,11 +291,12 @@ def main():
             assert not errors, errors
             browser.close()
         print(
-            "PASS: projects, isolation, keywords, XLSX, masked tokens, trash/restore, rename, local Lucide icons, desktop/mobile, no JS errors"
+            "PASS: project names, new scenario modules, isolation, keywords, XLSX, masked tokens, trash/restore, rename, logo/favicon, Lucide icons, desktop/mobile, no JS errors"
         )
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        httpx.AsyncHTTPTransport.handle_async_request = original_transport
 
 
 if __name__ == "__main__":

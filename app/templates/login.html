@@ -1,3 +1,38 @@
 {% from "icons.html" import icon %}
 {% set csrf = csrf|default(request.session.get('csrf', ''), true) %}
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход — VK Бот</title><link rel="stylesheet" href="/static/admin.css?v=6"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head><body class="login-page"><div class="login-story"><a class="brand" href="/login"><span class="brand-mark">vk</span><span>VK Бот<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a><div><span class="eyebrow">БЛИЖЕ К ВАШИМ КЛИЕНТАМ</span><h1>Хороший диалог.<br>С первого сообщения.</h1><p>Сценарии общения, персональные предложения<br>и забота о каждом клиенте — в одном месте.</p><div class="story-bubbles"><div>Привет! Чем можем помочь?</div><div>Хочу узнать о новой коллекции</div><div>С удовольствием расскажем!</div></div></div><small>Панель управления сообществами</small></div><main class="login-form"><span class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</span><h2>Рады видеть вас</h2><p class="muted">Войдите, чтобы управлять вашими проектами.</p>{% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}<form method="post" action="/login"><input type="hidden" name="csrf_token" value="{{ csrf }}"><label>Логин<input name="username" autocomplete="username" required autofocus placeholder="Ваш логин"></label><label>Пароль<input name="password" type="password" autocomplete="current-password" required placeholder="Введите пароль"></label><button class="btn login-submit" type="submit">Войти в панель {{ icon("arrow-right") }}</button></form><p class="hint">Доступ только для администраторов.</p></main></body></html>
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Вход — VK Бот</title>
+  <link rel="stylesheet" href="/static/admin.css?v=8">
+  <link rel="icon" href="/static/vk-bot-logo-v1.png" type="image/png">
+  <link rel="apple-touch-icon" href="/static/vk-bot-logo-v1.png">
+</head>
+<body class="login-page">
+  <div class="login-story">
+    <a class="brand" href="/login" aria-label="VK Бот — вход"><img class="brand-mark" src="/static/vk-bot-logo-v1.png" width="48" height="48" alt=""><span>VK BOT<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a>
+    <div>
+      <span class="eyebrow">БЛИЖЕ К ВАШИМ КЛИЕНТАМ</span>
+      <h1>Хороший диалог.<br>С первого сообщения.</h1>
+      <p>Сценарии общения, персональные предложения<br>и забота о каждом клиенте — в одном месте.</p>
+      <div class="story-bubbles"><div>Привет! Чем можем помочь?</div><div>Хочу узнать о новой коллекции</div><div>С удовольствием расскажем!</div></div>
+    </div>
+    <small>Панель управления сообществами</small>
+  </div>
+  <main class="login-form">
+    <span class="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</span>
+    <h2>Рады видеть вас</h2>
+    <p class="muted">Войдите, чтобы управлять вашими проектами.</p>
+    {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label>Логин<input name="username" autocomplete="username" required autofocus placeholder="Ваш логин"></label>
+      <label>Пароль<input name="password" type="password" autocomplete="current-password" required placeholder="Введите пароль"></label>
+      <button class="btn login-submit" type="submit">Войти в панель {{ icon("arrow-right") }}</button>
+    </form>
+    <p class="hint">Доступ только для администраторов.</p>
+  </main>
+</body>
+</html>

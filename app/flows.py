@@ -1,14 +1,36 @@
 """Validated graph and shared interpreter for VK and the admin simulator."""
 
+import hashlib
 import re
-from typing import Literal
+from decimal import Decimal, InvalidOperation
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 NodeId = str
-KINDS = {"start", "message", "question", "condition", "promo", "operator", "end"}
+KINDS = {
+    "start",
+    "message",
+    "question",
+    "condition",
+    "promo",
+    "operator",
+    "end",
+    "contact",
+    "set_variable",
+    "variable_condition",
+    "random",
+}
 VARIABLE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+RESERVED_VARIABLES = {
+    "first_name",
+    "last_name",
+    "user_name",
+    "promo_code",
+    "shop_url",
+    "last_message",
+}
 
 
 class Button(BaseModel):
@@ -27,7 +49,17 @@ class Rule(BaseModel):
 class Node(BaseModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     type: Literal[
-        "start", "message", "question", "condition", "promo", "operator", "end"
+        "start",
+        "message",
+        "question",
+        "condition",
+        "promo",
+        "operator",
+        "end",
+        "contact",
+        "set_variable",
+        "variable_condition",
+        "random",
     ]
     title: str = Field(default="Блок", max_length=120)
     x: float = Field(default=80, ge=0, le=10000, allow_inf_nan=False)
@@ -43,6 +75,24 @@ class Node(BaseModel):
     words: str = Field(default="", max_length=500)
     campaign_id: int | None = Field(default=None, gt=0)
     media_id: str = Field(default="", max_length=32)
+    contact_type: Literal["phone", "email"] = "phone"
+    allow_skip: bool = True
+    error_text: str = Field(default="", max_length=500)
+    value: str = Field(default="", max_length=1000)
+    comparison: Literal[
+        "equals",
+        "not_equals",
+        "contains",
+        "empty",
+        "not_empty",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+    ] = "equals"
+    variants: list[Annotated[str, Field(max_length=3500)]] = Field(
+        default_factory=list, max_length=10
+    )
 
 
 class Graph(BaseModel):
@@ -51,7 +101,7 @@ class Graph(BaseModel):
 
 def outputs(node):
     kind = node["type"]
-    if kind == "condition":
+    if kind in {"condition", "variable_condition"}:
         return [("Да", node["yes"]), ("Нет", node["no"])]
     if kind in {"end", "operator"}:
         return []
@@ -77,16 +127,38 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
     for n in nodes:
         prefix = n["title"] or n["id"]
         if (
-            n["type"] in {"message", "question"}
+            n["type"] in {"message", "question", "contact"}
             and not n["text"].strip()
             and not n["media_id"]
         ):
             errors.append(f"{prefix}: добавьте текст или файл.")
-        if n["type"] == "question" and (
-            not VARIABLE.fullmatch(n["variable"])
-            or n["variable"] in {"first_name", "user_name", "promo_code", "shop_url"}
+        if n["type"] in {"question", "contact", "set_variable"} and (
+            not VARIABLE.fullmatch(n["variable"]) or n["variable"] in RESERVED_VARIABLES
         ):
-            errors.append(f"{prefix}: имя ответа — латиница, цифры и _, например size.")
+            errors.append(
+                f"{prefix}: имя переменной — латиница, цифры и _, например size; системные имена зарезервированы."
+            )
+        if n["type"] == "variable_condition":
+            if not VARIABLE.fullmatch(n["variable"]):
+                errors.append(
+                    f"{prefix}: укажите имя проверяемой переменной, например size."
+                )
+            if n["comparison"] not in {"empty", "not_empty"} and not n["value"].strip():
+                errors.append(f"{prefix}: укажите значение для сравнения.")
+            if (
+                n["comparison"] in {"gt", "gte", "lt", "lte"}
+                and number(n["value"]) is None
+            ):
+                errors.append(
+                    f"{prefix}: для числового сравнения укажите число, например 1500 или 1,5."
+                )
+        if n["type"] == "random" and (
+            not 2 <= len(n["variants"]) <= 10
+            or any(not v.strip() for v in n["variants"])
+        ):
+            errors.append(
+                f"{prefix}: добавьте от 2 до 10 непустых вариантов сообщения."
+            )
         if (
             n["type"] == "condition"
             and n["condition"] == "contains"
@@ -138,7 +210,9 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
         if node_id in done or node_id not in by_id:
             return False
         n = by_id[node_id]
-        if n["type"] == "question" or (n["type"] == "message" and n["buttons"]):
+        if n["type"] in {"question", "contact"} or (
+            n["type"] == "message" and n["buttons"]
+        ):
             return False
         visiting.add(node_id)
         cycle = any(auto_cycle(t) for _, t in outputs(n))
@@ -165,6 +239,82 @@ def matches(text, words):
         for w in words.replace(",", "\n").splitlines()
         if w.strip()
     )
+
+
+def normalize_contact(text, kind):
+    value = text.strip()
+    if kind == "phone":
+        if len(value) > 80 or not re.fullmatch(r"\+?[0-9\s().-]+", value):
+            return None
+        digits = re.sub(r"[^0-9]", "", value)
+        if not 10 <= len(digits) <= 15:
+            return None
+        if len(digits) == 11 and digits.startswith("8") and not value.startswith("+"):
+            return "+7" + digits[1:]
+        return ("+" if value.startswith("+") else "") + digits
+    if kind != "email" or len(value) > 254 or value.count("@") != 1:
+        return None
+    local, domain = value.rsplit("@", 1)
+    if (
+        not 1 <= len(local) <= 64
+        or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)
+        or local.startswith(".")
+        or local.endswith(".")
+        or ".." in local
+    ):
+        return None
+    try:
+        domain = domain.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    labels = domain.split(".")
+    if (
+        len(labels) < 2
+        or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+            for part in labels
+        )
+        or len(local) + len(domain) + 1 > 254
+    ):
+        return None
+    return local + "@" + domain
+
+
+def number(value):
+    try:
+        result = Decimal(str(value).strip().replace(",", "."))
+        return result if result.is_finite() else None
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def compare_variable(node, variables):
+    raw = variables.get(node["variable"])
+    value = "" if raw is None else str(raw).strip()
+    expected = node["value"].strip()
+    operation = node["comparison"]
+    if operation == "empty":
+        return not value
+    if operation == "not_empty":
+        return bool(value)
+    if not value:
+        return False
+    if operation in {"equals", "not_equals", "contains"}:
+        left, right = value.casefold(), expected.casefold()
+        return {
+            "equals": left == right,
+            "not_equals": left != right,
+            "contains": right in left,
+        }[operation]
+    left, right = number(value), number(expected)
+    if left is None or right is None:
+        return False
+    return {
+        "gt": left > right,
+        "gte": left >= right,
+        "lt": left < right,
+        "lte": left <= right,
+    }[operation]
 
 
 def keyboard_for(node, version, nonce):
@@ -231,6 +381,25 @@ async def advance(graph, state, text, payload, port, *, restart=False):
             )
             return
         current = nodes[current["buttons"][index]["target"]]
+    elif current["type"] == "contact":
+        skipped = current["allow_skip"] and text.strip().casefold() == "пропустить"
+        value = normalize_contact(text, current["contact_type"])
+        if skipped:
+            variables.pop(current["variable"], None)
+        elif value is None:
+            default_error = (
+                "Введите телефон: от 10 до 15 цифр, можно с +, пробелами и скобками. Например +7 999 123-45-67."
+                if current["contact_type"] == "phone"
+                else "Введите email в формате name@example.com."
+            )
+            await port.emit(current["error_text"] or default_error)
+            return
+        else:
+            variables[current["variable"]] = value
+            # LivePort persists a volunteered phone in this project's client card;
+            # PreviewPort never writes contacts or calls VK.
+            await port.save_contact(current["contact_type"], value)
+        current = nodes[current["next"]]
     elif current["type"] == "question":
         if not text.strip():
             await port.emit("Пожалуйста, ответьте текстом.")
@@ -265,6 +434,14 @@ async def advance(graph, state, text, payload, port, *, restart=False):
     for step in range(100):
         state["node_id"] = current["id"]
         kind = current["type"]
+        if kind == "set_variable":
+            variables[current["variable"]] = render(current["value"], variables)[:1000]
+            current = nodes[current["next"]]
+            continue
+        if kind == "variable_condition":
+            result = compare_variable(current, variables)
+            current = nodes[current["yes"] if result else current["no"]]
+            continue
         if kind == "condition":
             result = (
                 matches(text, current["words"])
@@ -273,7 +450,19 @@ async def advance(graph, state, text, payload, port, *, restart=False):
             )
             current = nodes[current["yes"] if result else current["no"]]
             continue
-        if kind in {"message", "question"}:
+        if kind == "random":
+            # Stable for retries of the same callback; different incoming events
+            # can choose different variants. Repeats between events are allowed.
+            seed = f"{port.nonce(step)}:{current['id']}"
+            index = int.from_bytes(
+                hashlib.sha256(seed.encode()).digest()[:8], "big"
+            ) % len(current["variants"])
+            await port.emit(
+                render(current["variants"][index], variables),
+                media_id=current["media_id"],
+                keyboard={"one_time": False, "buttons": []},
+            )
+        elif kind in {"message", "question", "contact"}:
             # New nonce on each visit prevents a button from an older visit being reused.
             state["nonce"] = port.nonce(step)
             keyboard = (
@@ -281,12 +470,18 @@ async def advance(graph, state, text, payload, port, *, restart=False):
                 if kind == "message"
                 else {"one_time": False, "buttons": []}
             )
+            prompt = render(current["text"], variables)
+            if kind == "contact" and current["allow_skip"]:
+                hint = (
+                    "\n\nМожно написать «Пропустить», если не хотите оставлять контакт."
+                )
+                prompt = prompt[: 4000 - len(hint)] + hint
             await port.emit(
-                render(current["text"], variables),
+                prompt,
                 keyboard=keyboard,
                 media_id=current["media_id"],
             )
-            if kind == "question" or current["buttons"]:
+            if kind in {"question", "contact"} or current["buttons"]:
                 return
         elif kind == "promo":
             await port.promo(current["campaign_id"], variables)

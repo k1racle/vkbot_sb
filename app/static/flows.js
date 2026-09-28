@@ -9,6 +9,10 @@
     promo: ["Промокод", "tag"],
     operator: ["Менеджер", "user-round"],
     end: ["Завершение", "circle-stop"],
+    contact: ["Телефон / email", "user-round"],
+    set_variable: ["Записать переменную", "pencil"],
+    variable_condition: ["Проверить ответ", "git-branch"],
+    random: ["Случайный ответ", "messages-square"],
   };
   let flows = [],
     campaigns = [],
@@ -73,7 +77,7 @@
     }
   }
   function exits(n) {
-    if (n.type === "condition")
+    if (["condition", "variable_condition"].includes(n.type))
       return [
         { key: "yes", label: "Да", target: n.yes },
         { key: "no", label: "Нет", target: n.no },
@@ -113,6 +117,17 @@
     renderInspector();
     drawEdges();
   }
+  function summary(n) {
+    if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}`;
+    if (n.type === 'set_variable') return `{${n.variable}} = ${n.value || '(пусто)'}`;
+    if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
+    if (n.type === 'random') return `${n.variants.length} вариантов · один ответ за шаг\n${n.variants[0] || 'Добавьте тексты справа'}`;
+    if (n.type === 'condition') return n.condition === 'member' ? 'Подписан на сообщество?' : n.condition === 'promo_sent' ? 'Уже получал промокод?' : `Содержит: ${n.words || 'укажите слова'}`;
+    if (n.type === 'start') return 'Первое сообщение или команда «меню»';
+    if (n.type === 'promo') return campaigns.find(c => c.id === n.campaign_id)?.title || 'Выберите кампанию';
+    return n.text || 'Нажмите, чтобы настроить';
+  }
+  const comparisonNames = { equals: 'равно', not_equals: 'не равно', contains: 'содержит', empty: 'не заполнено', not_empty: 'заполнено', gt: 'больше', gte: 'больше или равно', lt: 'меньше', lte: 'меньше или равно' };
   function renderNodes() {
     if (!flow) return;
     const width = Math.max(1800, ...graph().nodes.map((n) => n.x + 400)),
@@ -122,7 +137,7 @@
     $("flow-nodes").innerHTML = graph()
       .nodes.map(
         (n) =>
-          `<article class="flow-node ${n.id === selected ? "selected" : ""}" data-id="${e(n.id)}" data-kind="${n.type}" style="left:${n.x}px;top:${n.y}px" tabindex="0" aria-label="${e(n.title)}"><button class="node-port input" aria-label="Соединить с ${e(n.title)}" data-input="${e(n.id)}"></button><div class="node-heading"><span class="node-symbol">${Admin.icon(kinds[n.type][1])}</span><strong>${e(n.title)}</strong><small>${kinds[n.type][0]}</small></div><div class="node-content">${e(n.type === "condition" ? (n.condition === "member" ? "Подписан на сообщество?" : n.condition === "promo_sent" ? "Уже получал промокод?" : `Содержит: ${n.words || "укажите слова"}`) : n.type === "start" ? "Первое сообщение или команда «меню»" : n.type === "promo" ? campaigns.find((c) => c.id === n.campaign_id)?.title || "Выберите кампанию" : n.text || "Нажмите, чтобы настроить")}${n.media_id ? `\n${Admin.icon("paperclip")} Прикреплён файл` : ""}</div>${exits(
+          `<article class="flow-node ${n.id === selected ? "selected" : ""}" data-id="${e(n.id)}" data-kind="${n.type}" style="left:${n.x}px;top:${n.y}px" tabindex="0" aria-label="${e(n.title)}"><button class="node-port input" aria-label="Соединить с ${e(n.title)}" data-input="${e(n.id)}"></button><div class="node-heading"><span class="node-symbol">${Admin.icon(kinds[n.type][1])}</span><strong>${e(n.title)}</strong><small>${kinds[n.type][0]}</small></div><div class="node-content">${e(summary(n))}${n.media_id ? `\n${Admin.icon("paperclip")} Прикреплён файл` : ""}</div>${exits(
             n,
           )
             .map(
@@ -248,10 +263,27 @@
     let html = `<span class="eyebrow">НАСТРОЙКИ БЛОКА</span><h3>${Admin.icon(kinds[n.type][1])} ${kinds[n.type][0]}</h3><label>Название блока<input data-field="title" value="${e(n.title)}" maxlength="120"></label>`;
     if (n.type === "start")
       html += `<label>Название сценария<input id="scenario-title" value="${e(flow.title)}" maxlength="120"></label><p class="hint">Запускается на первое сообщение и команду «меню». Активен один входной сценарий.</p>`;
-    if (["message", "question", "operator", "end"].includes(n.type))
+    if (["message", "question", "contact", "operator", "end"].includes(n.type))
       html += `<label>Сообщение<textarea data-field="text" maxlength="3500" placeholder="Что скажет бот?">${e(n.text)}</textarea></label><div class="hint">Имя: <code>{first_name}</code>. Ответы клиента: <code>{answer}</code> или имя вашей переменной.</div>`;
-    if (["message", "question"].includes(n.type))
+    if (["message", "question", "contact", "random"].includes(n.type))
       html += `<label class="upload-box">Вложение<input id="block-file" type="file" accept="image/*,video/*,audio/*,.pdf,.zip,.txt"><span class="hint">До 50 МБ. Видео и аудио отправляются как файлы.</span></label>${n.media_id ? `<div class="hint">${Admin.icon("paperclip")} ${e(media.find((m) => m.id === n.media_id)?.filename || "Файл")} <button class="btn ghost small" id="remove-media">Убрать</button></div>` : ""}`;
+    if (['contact', 'set_variable', 'variable_condition'].includes(n.type)) {
+      html += `<label>${n.type === 'variable_condition' ? 'Какую переменную проверить' : 'Имя переменной'}<input data-field="variable" value="${e(n.variable)}" pattern="[a-z][a-z0-9_]*" maxlength="32" placeholder="phone, email, interest"></label><p class="hint">Латинские буквы, цифры и _. В сообщении используйте <code>{${e(n.variable)}}</code>.</p>`;
+    }
+    if (n.type === 'contact') {
+      html += `<label>Какой контакт запросить<select data-field="contact_type"><option value="phone" ${n.contact_type === 'phone' ? 'selected' : ''}>Телефон</option><option value="email" ${n.contact_type === 'email' ? 'selected' : ''}>Email</option></select></label><label class="check"><input type="checkbox" data-field="allow_skip" ${n.allow_skip ? 'checked' : ''}> Разрешить ответ «Пропустить»</label><label>Подсказка при неверном формате<textarea data-field="error_text" maxlength="500" placeholder="Пусто — стандартная подсказка бота">${e(n.error_text)}</textarea></label><p class="hint">Бот ждёт текстовый ответ и проверяет формат, но не принадлежность контакта. Телефон сразу попадает в карточку клиента; оба контакта сохраняются в ответах диалога. Это не подписка на рассылку.</p>`;
+    }
+    if (n.type === 'set_variable') {
+      html += `<label>Что записать<textarea data-field="value" maxlength="1000" placeholder="Например: доставка или Запрос: {answer}">${e(n.value)}</textarea></label><p class="hint">Без сообщения клиенту. Можно подставлять {first_name}, {answer} и другие ответы. Пустое значение очищает переменную; код и формулы не исполняются.</p>`;
+    }
+    if (n.type === 'variable_condition') {
+      html += `<label>Условие<select data-field="comparison">${Object.entries(comparisonNames).map(([key, text]) => `<option value="${key}" ${n.comparison === key ? 'selected' : ''}>${text}</option>`).join('')}</select></label>`;
+      if (!['empty', 'not_empty'].includes(n.comparison)) html += `<label>С чем сравнить<input data-field="value" value="${e(n.value)}" maxlength="1000" placeholder="Например: доставка или 1500"></label>`;
+      html += '<p class="hint">Проверяет сохранённый ответ, а не последнее сообщение. Текст — без учёта регистра; для больше/меньше нужны числа. Неподходящее число или отсутствующий ответ ведут в «Нет».</p>';
+    }
+    if (n.type === 'random') {
+      html += `<h3>Варианты ответа</h3><p class="hint">От 2 до 10 текстов. Бот отправит один, затем перейдёт дальше. Повторы между разными обращениями возможны. Поддерживаются {first_name} и ваши переменные.</p>${n.variants.map((value, i) => `<div class="mini-card"><label>Вариант ${i + 1}<textarea data-field="variants.${i}" maxlength="3500">${e(value)}</textarea></label><button class="btn ghost small" data-delete-variant="${i}" ${n.variants.length <= 2 ? 'disabled' : ''}>Убрать вариант</button></div>`).join('')}<button id="add-variant" class="btn secondary small" ${n.variants.length >= 10 ? 'disabled' : ''}>${Admin.icon('plus')} Добавить вариант</button>`;
+    }
     if (n.type === "question") {
       html += `<label>Сохранить ответ как<input data-field="variable" value="${e(n.variable)}" pattern="[a-z][a-z0-9_]*" maxlength="32"></label><p class="hint">Например size → в сообщении используйте {size}.</p><div class="divider"></div><h3>Ветки по ответу</h3><p class="hint">Проверяются сверху вниз. Слова разделяйте запятыми.</p>`;
       html += n.rules
@@ -300,7 +332,7 @@
     if (n.type === "operator")
       html +=
         '<p class="hint">Бот приостановит ответы клиенту и уведомит всех менеджеров из раздела «Общение». Первый ответивший или нажавший «Взять в работу» станет ответственным. Переписка продолжается в VK.</p>';
-    if (n.type === "condition")
+    if (["condition", "variable_condition"].includes(n.type))
       html +=
         targetSelect("yes", "Если да", n.yes) +
         targetSelect("no", "Если нет", n.no);
@@ -322,15 +354,21 @@
       .forEach((input) => {
         input.addEventListener("focus", () => snapshot(), { once: true });
         input.addEventListener("input", () => {
-          let value = input.value;
+          let value = input.type === 'checkbox' ? input.checked : input.value;
           if (input.dataset.field === "campaign_id")
             value = value ? Number(value) : null;
+          if (input.dataset.field === 'contact_type') {
+            const previous = n.contact_type;
+            if (n.variable === previous) n.variable = value;
+            const prompts = { phone: 'Оставьте телефон для связи, например +7 999 123-45-67.', email: 'Оставьте email для связи, например name@example.com.' };
+            if (n.text === prompts[previous]) n.text = prompts[value];
+          }
           set(n, input.dataset.field, value);
           markDirty();
           renderNodes();
           if (
             input.tagName === "SELECT" &&
-            (input.dataset.field === "condition" ||
+            (['condition', 'comparison', 'contact_type'].includes(input.dataset.field) ||
               input.dataset.field.endsWith(".kind"))
           )
             renderInspector();
@@ -360,6 +398,16 @@
         n.rules.push({ words: "", target: "" });
         changed();
       };
+    if ($('add-variant')) $('add-variant').onclick = () => {
+      if (n.variants.length >= 10) return;
+      snapshot(); n.variants.push(''); changed();
+    };
+    $('block-inspector').querySelectorAll('[data-delete-variant]').forEach(button => {
+      button.onclick = () => {
+        if (n.variants.length <= 2) return;
+        snapshot(); n.variants.splice(Number(button.dataset.deleteVariant), 1); changed();
+      };
+    });
     $("block-inspector")
       .querySelectorAll("[data-delete-button]")
       .forEach(
@@ -549,7 +597,17 @@
           words: "",
           campaign_id: null,
           media_id: "",
+          contact_type: 'phone',
+          allow_skip: true,
+          error_text: '',
+          comparison: 'equals',
+          value: '',
+          variants: b.dataset.add === 'random' ? ['Спасибо за ваш интерес, {first_name}!', 'Рады помочь, {first_name}!'] : [],
         };
+        if (n.type === 'contact') {
+          n.variable = 'phone';
+          n.text = 'Оставьте телефон для связи, например +7 999 123-45-67.';
+        }
         graph().nodes.push(n);
         selected = n.id;
         changed();

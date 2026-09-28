@@ -253,6 +253,9 @@ async def preview(body: PreviewInput):
         messages = []
 
         class PreviewPort:
+            async def save_contact(self, kind, value):
+                pass  # Simulator only: do not change the client directory.
+
             def nonce(self, step):
                 return secrets.token_hex(8)
 

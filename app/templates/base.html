@@ -11,13 +11,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>{{ project.name if project else 'Проекты' }} — VK Бот</title>
-  <link rel="stylesheet" href="/static/admin.css?v=6">
-  <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/admin.css?v=8">
+  <link rel="icon" href="/static/vk-bot-logo-v1.png" type="image/png">
+  <link rel="apple-touch-icon" href="/static/vk-bot-logo-v1.png">
 </head>
 <body data-section="{{ section }}" data-project-id="{{ project.id if project else '' }}" data-project-prefix="{{ prefix }}">
   <a class="skip-link" href="#main-content">Перейти к содержимому</a>
   <aside class="sidebar">
-    <a class="brand" href="/projects" aria-label="VK Бот — все проекты"><span class="brand-mark" aria-hidden="true">vk</span><span>VK Бот<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a>
+    <a class="brand" href="/projects" aria-label="VK Бот — все проекты"><img class="brand-mark" src="/static/vk-bot-logo-v1.png" width="48" height="48" alt=""><span>VK BOT<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a>
     <div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
     <nav class="side-nav" aria-label="Основное меню">
       <a href="/projects" aria-label="Все проекты" title="Все проекты" {% if not project %}class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon("layout-grid") }}</span>Проекты</a>

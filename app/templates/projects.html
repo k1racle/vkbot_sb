@@ -8,7 +8,7 @@
 <div class="projects-layout">
   <section class="projects-list" aria-label="Ваши проекты">
     {% for item in all_projects %}
-    <article class="panel project-card" id="project-{{ item.id }}" aria-labelledby="project-title-{{ item.id }}">
+    <article class="panel project-card" id="project-{{ item.id }}" aria-labelledby="project-title-{{ item.id }}" data-project-id="{{ item.id }}" data-auto-name="{{ '1' if item.has_token and item.name == 'VK ' ~ item.group_id else '0' }}">
       <div class="panel-heading">
         <div><h2 id="project-title-{{ item.id }}">{{ item.name }}</h2><p class="hint">Сообщество <a href="https://vk.com/club{{ item.group_id }}" target="_blank" rel="noopener noreferrer">ID {{ item.group_id }} {{ icon("external-link") }}</a>{% if item.is_legacy %} · Исходный проект{% endif %}</p></div>
         <span class="badge {{ 'live' if item.enabled else 'warning' }}">{{ 'Включён' if item.enabled else 'На паузе' }}</span>
@@ -23,9 +23,9 @@
       <div class="project-actions">
         <a class="btn" href="/p/{{ item.id }}/admin">Открыть проект {{ icon("arrow-right") }}</a>
         <form method="post" action="/projects/{{ item.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn secondary">Проверить подключение</button></form>
-        <form method="post" action="/projects/{{ item.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="refresh_name" value="1"><button type="submit" class="btn secondary">{{ icon("refresh-cw") }} Получить название из VK</button></form>
+        <button type="button" class="btn secondary" data-refresh-name>{{ icon("refresh-cw") }} Получить название из VK</button>
       </div>
-      <p class="hint">Название показывается в переключателе групп. Можно получить его из VK или задать своё в настройках ниже. Обычная проверка меняет только служебное название «VK {{ item.group_id }}», а кнопка получения названия заменяет и введённое вручную. Сообщения клиентам не отправляются.</p>
+      <p class="hint" data-name-status role="status">Служебное название «VK {{ item.group_id }}» загрузится автоматически при наличии токена. Своё название можно задать ниже; оно не заменяется автоматически. Кнопка получения названия заменит его названием из VK. Сообщения клиентам не отправляются.</p>
       <details class="project-settings" {% if error|default(none) %}open{% endif %}>
         <summary>Подключение и настройки проекта<span class="sr-only"> {{ item.name }}</span></summary>
         <form method="post" action="/projects/{{ item.id }}/settings" data-unsaved>
@@ -92,3 +92,4 @@
   {% else %}<p class="muted spaced">Корзина пуста.</p>{% endfor %}
 </section>
 {% endblock %}
+{% block scripts %}<script src="/static/project-names.js?v=1" defer></script>{% endblock %}
