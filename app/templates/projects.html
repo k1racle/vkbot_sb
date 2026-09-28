@@ -3,14 +3,14 @@
 {% set all_projects = projects|default(project_list, true) %}
 <div class="page-heading">
   <div><span class="eyebrow">СООБЩЕСТВА VK</span><h1>Проекты <span class="badge">{{ all_projects|length }}</span></h1><p>Сценарии, клиенты и рассылки каждого сообщества — в своём проекте.</p></div>
-  <a class="btn" href="#new-project">＋ Добавить проект</a>
+  <a class="btn" href="#new-project">{{ icon("plus") }} Добавить проект</a>
 </div>
 <div class="projects-layout">
   <section class="projects-list" aria-label="Ваши проекты">
     {% for item in all_projects %}
     <article class="panel project-card" id="project-{{ item.id }}" aria-labelledby="project-title-{{ item.id }}">
       <div class="panel-heading">
-        <div><h2 id="project-title-{{ item.id }}">{{ item.name }}</h2><p class="hint">Сообщество <a href="https://vk.com/club{{ item.group_id }}" target="_blank" rel="noopener noreferrer">ID {{ item.group_id }} ↗</a>{% if item.is_legacy %} · Исходный проект{% endif %}</p></div>
+        <div><h2 id="project-title-{{ item.id }}">{{ item.name }}</h2><p class="hint">Сообщество <a href="https://vk.com/club{{ item.group_id }}" target="_blank" rel="noopener noreferrer">ID {{ item.group_id }} {{ icon("external-link") }}</a>{% if item.is_legacy %} · Исходный проект{% endif %}</p></div>
         <span class="badge {{ 'live' if item.enabled else 'warning' }}">{{ 'Включён' if item.enabled else 'На паузе' }}</span>
       </div>
       <ul class="project-readiness" aria-label="Данные подключения">
@@ -21,10 +21,11 @@
       <label for="callback-{{ item.id }}">Адрес Callback API</label>
       <div class="callback-row"><input id="callback-{{ item.id }}" type="url" readonly value="{{ callback_base_url|default(request.base_url, true) }}vk/callback/{{ item.id }}" spellcheck="false"><button type="button" class="btn secondary small" data-copy-target="callback-{{ item.id }}" aria-label="Скопировать адрес Callback API проекта {{ item.name }}" hidden>Копировать</button></div>
       <div class="project-actions">
-        <a class="btn" href="/p/{{ item.id }}/admin">Открыть проект →</a>
+        <a class="btn" href="/p/{{ item.id }}/admin">Открыть проект {{ icon("arrow-right") }}</a>
         <form method="post" action="/projects/{{ item.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn secondary">Проверить подключение</button></form>
+        <form method="post" action="/projects/{{ item.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="refresh_name" value="1"><button type="submit" class="btn secondary">{{ icon("refresh-cw") }} Получить название из VK</button></form>
       </div>
-      <p class="hint">Проверка сверяет токен с ID сообщества. Сообщения клиентам не отправляются.</p>
+      <p class="hint">Название показывается в переключателе групп. Можно получить его из VK или задать своё в настройках ниже. Обычная проверка меняет только служебное название «VK {{ item.group_id }}», а кнопка получения названия заменяет и введённое вручную. Сообщения клиентам не отправляются.</p>
       <details class="project-settings" {% if error|default(none) %}open{% endif %}>
         <summary>Подключение и настройки проекта<span class="sr-only"> {{ item.name }}</span></summary>
         <form method="post" action="/projects/{{ item.id }}/settings" data-unsaved>
@@ -48,12 +49,21 @@
             <p class="hint">Без токена приглашение отправляется в разрешённую личку. Если она закрыта, подарок остаётся доступен после перехода в чат; ссылку можно разместить в описании видео. Уже обработанные комментарии автоматически не повторяются.</p>
           </div>
           <label class="switch-row project-enable"><span><strong>Включить проект</strong><small>Для включения нужны токен, секрет Callback API и код подтверждения. Выключение приостанавливает обработку и отправку сообщений.</small></span><input name="enabled" type="checkbox" value="1" {% if item.enabled %}checked{% endif %}></label>
-          <div class="form-footer"><a href="/p/{{ item.id }}/admin?section=settings">К настройкам бота</a><button class="btn" type="submit">Сохранить проект</button></div>
+          <div class="form-footer"><a href="/p/{{ item.id }}/admin?section=settings">К настройкам бота</a><button class="btn" type="submit">{{ icon("save") }} Сохранить проект</button></div>
+        </form>
+      </details>
+      <details class="project-settings">
+        <summary>Удалить проект</summary>
+        <p class="hint spaced">Проект исчезнет из списка и остановится. Группа VK не удаляется. Данные и файлы останутся в корзине; восстановление не включает бота. Рассылки в очереди будут отменены, уже начатая отправка может завершиться.</p>
+        <form method="post" action="/projects/{{ item.id }}/delete" data-confirm="Переместить проект в корзину и остановить бота этой группы?">
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <label>Для подтверждения введите ID {{ item.group_id }}<input name="confirmation" inputmode="numeric" autocomplete="off" required placeholder="ID удаляемого сообщества"></label>
+          <button class="btn danger" type="submit">{{ icon("trash") }} Удалить в корзину</button>
         </form>
       </details>
     </article>
     {% else %}
-    <div class="panel empty"><div class="empty-art" aria-hidden="true">▦</div><h2>Подключите первое сообщество</h2><p>Добавьте название и ID группы VK. Ключи можно настроить позже — новый проект появится на паузе.</p><a class="btn secondary" href="#new-project">Создать проект</a></div>
+    <div class="panel empty"><div class="empty-art" aria-hidden="true">{{ icon("layout-grid") }}</div><h2>Подключите первое сообщество</h2><p>Добавьте название и ID группы VK. Ключи можно настроить позже — новый проект появится на паузе.</p><a class="btn secondary" href="#new-project">Создать проект</a></div>
     {% endfor %}
   </section>
   <section class="panel project-create" id="new-project" aria-labelledby="new-project-title">
@@ -74,4 +84,11 @@
     </form>
   </section>
 </div>
+<section class="panel spaced" id="project-trash" aria-labelledby="project-trash-title">
+  <h2 id="project-trash-title">Корзина проектов <span class="badge">{{ deleted_projects|default([])|length }}</span></h2>
+  <p class="hint">Удалённые проекты можно вернуть без потери истории. Они восстановятся на паузе, отменённые рассылки не возобновятся. Постоянное удаление данных и файлов здесь не выполняется.</p>
+  {% for item in deleted_projects|default([]) %}
+  <div class="panel-heading spaced"><div><strong>{{ item.name }}</strong><p class="hint">ID {{ item.group_id }}</p></div><form method="post" action="/projects/{{ item.id }}/restore"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="btn secondary" type="submit">{{ icon("rotate-ccw") }} Восстановить на паузе</button></form></div>
+  {% else %}<p class="muted spaced">Корзина пуста.</p>{% endfor %}
+</section>
 {% endblock %}

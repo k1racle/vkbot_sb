@@ -77,7 +77,7 @@ class ProjectMiddleware:
             scope = dict(scope, path=f"/admin{match[2]}")
         elif callback_match:
             project = (
-                projects.get_project(int(callback_match[1]))
+                projects.get_project(int(callback_match[1]), include_deleted=True)
                 if int(callback_match[1]) <= 2147483647
                 else None
             )
@@ -85,7 +85,14 @@ class ProjectMiddleware:
         elif path == "/vk/callback" or path == "/admin" or path.startswith("/admin/"):
             # Old bookmarks/forms are permanently bound to the imported group,
             # never to whichever group was opened in a different browser tab.
-            project = next((p for p in projects.list_projects() if p.is_legacy), None)
+            project = next(
+                (
+                    p
+                    for p in projects.list_projects(include_deleted=callback)
+                    if p.is_legacy
+                ),
+                None,
+            )
         elif path.startswith(("/p/", "/vk/callback")):
             return await PlainTextResponse("Not found", status_code=404)(
                 scope, receive, send
@@ -149,6 +156,11 @@ def project_page(request, error=None, notice=None, code=200):
             "section": "projects",
             "csrf": request.session["csrf"],
             "projects": [projects.public_project(p) for p in projects.list_projects()],
+            "deleted_projects": [
+                projects.public_project(p)
+                for p in projects.list_projects(include_deleted=True)
+                if p.is_deleted
+            ],
             "error": error,
             "notice": notice,
             "callback_base_url": (
@@ -252,9 +264,19 @@ async def check_project(project_id: int, request: Request):
                 payload = response.json()
             result = payload.get("response", {})
             groups = result.get("groups", []) if isinstance(result, dict) else result
-            if not isinstance(groups, list) or not any(
-                isinstance(g, dict) and g.get("id") == project.group_id for g in groups
-            ):
+            group = (
+                next(
+                    (
+                        g
+                        for g in groups
+                        if isinstance(g, dict) and g.get("id") == project.group_id
+                    ),
+                    None,
+                )
+                if isinstance(groups, list)
+                else None
+            )
+            if not group:
                 return project_page(
                     request,
                     error="VK не подтвердил принадлежность токена этой группе. Проверьте ID и ключ.",
@@ -266,7 +288,51 @@ async def check_project(project_id: int, request: Request):
                 error="Не удалось проверить подключение к VK. Повторите позже.",
                 code=422,
             )
+    form = await request.form()
+    refresh_name = form.get("refresh_name") == "1"
+    # Custom names are preserved by ordinary connection checks. Explicit name
+    # refresh deliberately replaces them, only after verifying token ownership.
+    group_name = str(group.get("name") or "").strip()
+    renamed = False
+    if group_name and (refresh_name or project.name == f"VK {project.group_id}"):
+        current = projects.get_project(project.id)
+        if (
+            current
+            and current.token == project.token
+            and (refresh_name or current.name == project.name)
+        ):
+            projects.update_project(project.id, name=group_name[:120])
+            renamed = True
     return project_page(
         request,
-        notice=f"Токен проекта «{project.name}» относится к указанной группе. Это не проверка прав отправки и настройки Callback API.",
+        notice=(f"Название обновлено: {group_name[:120]}. " if renamed else "")
+        + "Токен относится к указанной группе. Это не проверка прав отправки и настройки Callback API."
+        + (" VK не вернул название группы." if refresh_name and not group_name else ""),
     )
+
+
+@router.post(
+    "/projects/{project_id}/delete", dependencies=[Depends(protect_admin_form)]
+)
+async def delete_project(project_id: int, request: Request):
+    if not request.session.get("admin_authenticated"):
+        return RedirectResponse("/login", status_code=303)
+    form = await request.form()
+    try:
+        projects.delete_project(project_id, str(form.get("confirmation", "")))
+    except ValueError as error:
+        return project_page(request, error=str(error), code=422)
+    return RedirectResponse("/projects#project-trash", status_code=303)
+
+
+@router.post(
+    "/projects/{project_id}/restore", dependencies=[Depends(protect_admin_form)]
+)
+async def restore_project(project_id: int, request: Request):
+    if not request.session.get("admin_authenticated"):
+        return RedirectResponse("/login", status_code=303)
+    try:
+        projects.restore_project(project_id)
+    except ValueError as error:
+        return project_page(request, error=str(error), code=422)
+    return RedirectResponse(f"/projects#project-{project_id}", status_code=303)

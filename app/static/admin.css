@@ -822,7 +822,7 @@ th {
   position: relative;
   transform-origin: top left;
 }
-.canvas-world svg {
+.canvas-world > svg {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -1676,3 +1676,26 @@ a:focus-visible {
   .project-actions .btn { width: 100%; }
   .project-card .form-footer > a { text-align: center; padding: 6px; }
 }
+
+/* Local Lucide SVGs: consistent strokes, no icon fonts or remote requests. */
+.icon {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  vertical-align: -3px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.nav-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.nav-icon .icon { width: 21px; height: 21px; }
+.empty-art .icon { width: 36px; height: 36px; }
+.node-symbol { display: inline-flex; align-items: center; justify-content: center; }
+.block-palette button { display: inline-flex; gap: 6px; align-items: center; }
+.block-palette .icon { width: 15px; height: 15px; }
+.logout { display: inline-flex; gap: 7px; align-items: center; }
+#broadcast-rename { max-width: 520px; }

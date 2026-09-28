@@ -130,6 +130,7 @@ def claim_recipient():
         # Finish jobs only when no pending or in-flight recipient remains.
         for job in (
             session.query(db.Broadcast)
+            .filter_by(is_deleted=False)
             .filter(db.Broadcast.status.in_(["queued", "running"]))
             .order_by(db.Broadcast.created_at)
         ):

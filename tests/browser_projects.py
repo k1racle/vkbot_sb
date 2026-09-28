@@ -136,13 +136,86 @@ def main():
             assert workbook["Клиенты"]["B2"].value == "Анна"
             workbook.close()
             page.goto("http://127.0.0.1:8766/projects")
-            page.locator("#project-1 details summary").click()
+            page.locator("#project-1 .project-settings summary").first.click()
             settings_form = page.locator('form[action="/projects/1/settings"]')
             settings_form.locator('[name="video_token"]').fill("browser-video-secret")
             settings_form.locator('button[type="submit"]').click()
             page.wait_for_url("**/projects#project-1")
             assert "browser-video-secret" not in page.content()
             assert page.locator('[name="clear_video_token"]').count() == 1
+            # Recoverable deletion from the real UI; no outgoing messages.
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=scenarios")
+            page.locator('.flow-node[data-id="welcome"]').wait_for()
+            assert page.locator(".node-symbol .icon").count() > 0
+            icon_width = page.locator(".node-symbol .icon").first.evaluate(
+                "el => parseFloat(getComputedStyle(el).width)"
+            )
+            assert 17 <= icon_width <= 19, icon_width
+            assert page.locator(".side-nav .icon use").count() == 9
+            assert page.locator(".side-nav .icon").first.evaluate(
+                "el => el.getBBox().width > 0"
+            )
+            page.screenshot(path=str(output / "lucide-scenarios.png"), full_page=True)
+            page.locator("#delete-flow").click()
+            page.locator("#flow-empty").wait_for(state="visible")
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
+            page.locator('[data-kind="scenario"]').click()
+            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=campaigns")
+            page.get_by_role("button", name="Удалить кампанию", exact=True).click()
+            page.wait_for_url("**/*campaign_deleted=1*")
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
+            page.locator('[data-kind="campaign"]').click()
+            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            with (
+                projects.project_scope(projects.get_project(1)),
+                db.SessionLocal() as session,
+            ):
+                session.add(
+                    db.Broadcast(
+                        id="browser-mail",
+                        title="Тест раасылки из админки бота",
+                        message="Текст",
+                        status="completed",
+                    )
+                )
+                session.add(
+                    db.BroadcastRecipient(
+                        broadcast_id="browser-mail", user_id=77, status="sent"
+                    )
+                )
+                session.commit()
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=broadcasts")
+            page.locator('[data-action="rename"]').click()
+            page.locator("#broadcast-rename-title").fill(
+                "Тест рассылки из админки бота"
+            )
+            page.locator("#broadcast-rename-save").click()
+            page.locator(".crm-job h3").get_by_text(
+                "Тест рассылки из админки бота", exact=True
+            ).wait_for()
+            assert "1 получатель" in page.locator(".crm-job").inner_text()
+            page.locator("h1").click()
+            page.screenshot(path=str(output / "lucide-broadcasts.png"), full_page=True)
+            page.locator('[data-action="delete"]').click()
+            page.locator("#broadcast-jobs").get_by_text(
+                "Рассылок ещё нет.", exact=False
+            ).wait_for()
+            page.goto("http://127.0.0.1:8766/p/1/admin?section=trash")
+            page.locator('[data-kind="broadcast"]').click()
+            page.locator("#trash-items").get_by_text("Корзина пуста.").wait_for()
+            page.goto("http://127.0.0.1:8766/projects")
+            page.locator("#project-2").get_by_text("Удалить проект", exact=True).click()
+            delete_form = page.locator('form[action="/projects/2/delete"]')
+            delete_form.locator('[name="confirmation"]').fill("456")
+            delete_form.locator('button[type="submit"]').click()
+            page.locator('form[action="/projects/2/restore"] button').wait_for()
+            assert (
+                page.locator('#project-select option[value="/p/2/admin"]').count() == 0
+            )
+            page.locator('form[action="/projects/2/restore"] button').click()
+            page.locator("#project-2").wait_for()
+            assert not projects.get_project(2).enabled
             mobile = context.new_page()
             mobile.set_viewport_size({"width": 390, "height": 844})
             mobile.goto("http://127.0.0.1:8766/projects")
@@ -150,7 +223,7 @@ def main():
             assert mobile.evaluate(
                 "document.documentElement.scrollWidth <= innerWidth + 1"
             )
-            for section in ("campaigns", "clients"):
+            for section in ("campaigns", "clients", "broadcasts", "trash"):
                 mobile.goto(f"http://127.0.0.1:8766/p/1/admin?section={section}")
                 assert mobile.evaluate(
                     "document.documentElement.scrollWidth <= innerWidth + 1"
@@ -168,7 +241,7 @@ def main():
             assert not errors, errors
             browser.close()
         print(
-            "PASS: projects, two-tab isolation, keywords, XLSX download, masked video token, desktop/mobile, no JS errors"
+            "PASS: projects, isolation, keywords, XLSX, masked tokens, trash/restore, rename, local Lucide icons, desktop/mobile, no JS errors"
         )
     finally:
         server.should_exit = True

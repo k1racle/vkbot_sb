@@ -71,6 +71,9 @@ class _ProjectRow(RegistryBase):
     encrypted_confirmation: Mapped[str] = mapped_column(Text)
     encrypted_defaults: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(default=True)
+    is_deleted: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
     # UNIQUE allows many NULLs but only one legacy owner on both backends.
     legacy_slot: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
 
@@ -94,6 +97,7 @@ class Project:
     enabled: bool
     is_legacy: bool
     _cipher: Fernet = field(repr=False, compare=False)
+    is_deleted: bool = False
 
     @property
     def token(self) -> str:
@@ -350,6 +354,7 @@ def _to_project(row: _ProjectRow, cipher: Fernet) -> Project:
         encrypted_defaults=row.encrypted_defaults,
         enabled=row.enabled,
         is_legacy=row.legacy_slot == 1,
+        is_deleted=row.is_deleted,
         _cipher=cipher,
     )
 
@@ -467,6 +472,14 @@ def init_registry(settings=None) -> list[Project]:
     settings = _base_settings() if settings is None else settings
     with _registry_write() as session:
         RegistryBase.metadata.create_all(session.connection())
+        if "is_deleted" not in {
+            c["name"] for c in inspect(session.connection()).get_columns("projects")
+        }:
+            session.execute(
+                text(
+                    "ALTER TABLE projects ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
         state = session.get(_RegistryState, 1)
         rows = list(session.scalars(select(_ProjectRow)))
         group_id = getattr(settings, "vk_group_id", 0)
@@ -522,32 +535,42 @@ def init_registry(settings=None) -> list[Project]:
         db.init_db(
             db.get_project_engine(project), migration_owner_group_id=project.group_id
         )
-    return projects
+    return [project for project in projects if not project.is_deleted]
 
 
-def list_projects(enabled_only: bool = False) -> list[Project]:
+def list_projects(
+    enabled_only: bool = False, *, include_deleted: bool = False
+) -> list[Project]:
     from . import db
 
     with Session(bind=db.engine) as session:
         cipher = _checked_cipher(session)
         query = select(_ProjectRow)
+        if not include_deleted:
+            query = query.where(_ProjectRow.is_deleted.is_(False))
         if enabled_only:
             query = query.where(_ProjectRow.enabled.is_(True))
         projects = [_to_project(row, cipher) for row in session.scalars(query)]
         return sorted(projects, key=lambda p: (not p.is_legacy, p.name, p.id))
 
 
-def get_project(project_id: int) -> Project | None:
+def get_project(project_id: int, *, include_deleted: bool = False) -> Project | None:
     from . import db
 
     validate_project_id(project_id)
     with Session(bind=db.engine) as session:
         cipher = _checked_cipher(session)
         row = session.get(_ProjectRow, project_id)
-        return None if row is None else _to_project(row, cipher)
+        return (
+            None
+            if row is None or (row.is_deleted and not include_deleted)
+            else _to_project(row, cipher)
+        )
 
 
-def get_project_by_group_id(group_id: int | str) -> Project | None:
+def get_project_by_group_id(
+    group_id: int | str, *, include_deleted: bool = False
+) -> Project | None:
     from . import db
 
     group_id = _validate_group_id(group_id)
@@ -556,7 +579,11 @@ def get_project_by_group_id(group_id: int | str) -> Project | None:
         row = session.scalar(
             select(_ProjectRow).where(_ProjectRow.group_id == group_id)
         )
-        return None if row is None else _to_project(row, cipher)
+        return (
+            None
+            if row is None or (row.is_deleted and not include_deleted)
+            else _to_project(row, cipher)
+        )
 
 
 def create_project(
@@ -617,7 +644,7 @@ def update_project(
     with _registry_write() as session:
         cipher = _checked_cipher(session)
         row = session.get(_ProjectRow, project_id)
-        if row is None:
+        if row is None or row.is_deleted:
             raise ProjectNotFoundError("Проект не найден.")
         _to_project(row, cipher)
         if group_id is not None and _validate_group_id(group_id) != row.group_id:
@@ -671,11 +698,59 @@ def public_project(project: Project) -> dict:
         "group_id": project.group_id,
         "enabled": project.enabled,
         "is_legacy": project.is_legacy,
+        "is_deleted": project.is_deleted,
         "has_token": bool(project.token),
         "has_secret": bool(project.secret),
         "has_confirmation": bool(project.confirmation),
         "has_video_token": bool(project.video_token),
     }
+
+
+def delete_project(project_id: int, confirmation: str) -> None:
+    """Recoverable removal; never drop schemas/files or delete the VK group."""
+    validate_project_id(project_id)
+    with _registry_write() as session:
+        row = session.get(_ProjectRow, project_id)
+        if row is None:
+            raise ProjectNotFoundError("Проект не найден.")
+        if confirmation.strip() != str(row.group_id):
+            raise ProjectValidationError(
+                "Для подтверждения введите ID удаляемого сообщества."
+            )
+        row.enabled, row.is_deleted = False, True
+    # From this point API/worker guards reject fresh and stale project contexts.
+    _cancel_project_jobs(get_project(project_id, include_deleted=True))
+
+
+def _cancel_project_jobs(project: Project) -> None:
+    from . import db
+
+    with project_scope(project), db.SessionLocal() as session:
+        session.query(db.Broadcast).filter(
+            db.Broadcast.status.in_(["queued", "running", "paused"])
+        ).update({"status": "cancelled"})
+        cancelled = session.query(db.Broadcast.id).filter_by(status="cancelled")
+        session.query(db.BroadcastRecipient).filter(
+            db.BroadcastRecipient.broadcast_id.in_(cancelled),
+            db.BroadcastRecipient.status == "pending",
+        ).update({"status": "cancelled"}, synchronize_session=False)
+        session.query(db.Client).update({"profile_requested": False})
+        session.commit()
+
+
+def restore_project(project_id: int) -> Project:
+    project = get_project(project_id, include_deleted=True)
+    if project is None or not project.is_deleted:
+        raise ProjectNotFoundError("Проект не найден в корзине.")
+    # Also retries cleanup if a previous removal stopped after registry commit.
+    _cancel_project_jobs(project)
+    with _registry_write() as session:
+        row = session.get(_ProjectRow, project_id)
+        if row is None or not row.is_deleted:
+            raise ProjectNotFoundError("Проект уже восстановлен.")
+        row.is_deleted, row.enabled = False, False
+        session.flush()
+        return _to_project(row, _checked_cipher(session))
 
 
 def data_directory(default_path: str | Path) -> Path:

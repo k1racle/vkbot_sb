@@ -22,6 +22,10 @@ window.Admin = {
         })[c],
     );
   },
+  icon(name) {
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) return "";
+    return `<svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg?v=1#${name}"></use></svg>`;
+  },
   async api(path, method = "GET", body) {
     const headers = {
       "X-CSRF-Token": document.querySelector("meta[name=csrf-token]")?.content || "",
@@ -108,7 +112,7 @@ const notices = {
   project_saved: "Настройки проекта сохранены.",
   project_checked: "Подключение проверено: токен соответствует сообществу.",
   campaign_saved: "Кампания сохранена.",
-  campaign_deleted: "Кампания удалена.",
+  campaign_deleted: "Кампания перемещена в корзину. Ожидающие подарки отменены; историю и файлы сохранили.",
   campaign_toggled: "Статус кампании изменён.",
   test_sent: "Тестовое сообщение отправлено в VK.",
 };
@@ -244,7 +248,7 @@ async function loadClients() {
       ? clients
           .map(
             (c) =>
-              `<article class="panel"><div class="panel-heading"><div><h3>${e(c.name)}</h3><a class="small" href="https://vk.com/id${c.user_id}" target="_blank" rel="noopener">id${c.user_id} ↗</a></div><span class="badge ${c.handoff ? "warning" : "live"}">${c.handoff ? (c.assigned_operator_id ? "В работе у менеджера" : "Ждёт менеджера") : "Бот"}</span></div>${c.assigned_operator_id ? `<p>Ответственный: <a href="https://vk.com/id${c.assigned_operator_id}" target="_blank" rel="noopener">id${c.assigned_operator_id} ↗</a><span class="hint"> · с ${e(c.assigned_at)} UTC</span></p>` : ""}${c.handoff ? `<button class="btn secondary" data-resume="${c.user_id}">Вернуть к боту</button>` : ""}<details><summary>Ответы клиента</summary>${Object.entries(
+              `<article class="panel"><div class="panel-heading"><div><h3>${e(c.name)}</h3><a class="small" href="https://vk.com/id${c.user_id}" target="_blank" rel="noopener">id${c.user_id} ${Admin.icon("external-link")}</a></div><span class="badge ${c.handoff ? "warning" : "live"}">${c.handoff ? (c.assigned_operator_id ? "В работе у менеджера" : "Ждёт менеджера") : "Бот"}</span></div>${c.assigned_operator_id ? `<p>Ответственный: <a href="https://vk.com/id${c.assigned_operator_id}" target="_blank" rel="noopener">id${c.assigned_operator_id} ${Admin.icon("external-link")}</a><span class="hint"> · с ${e(c.assigned_at)} UTC</span></p>` : ""}${c.handoff ? `<button class="btn secondary" data-resume="${c.user_id}">Вернуть к боту</button>` : ""}<details><summary>Ответы клиента</summary>${Object.entries(
                 c.variables,
               )
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)

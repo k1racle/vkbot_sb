@@ -269,7 +269,7 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
                 is not None
             )
             keyboard = gift_keyboard("Следующий подарок") if more else None
-            if not campaign or not campaign.enabled:
+            if not campaign or campaign.is_deleted or not campaign.enabled:
                 gift.status, gift.active_key = "cancelled", None
                 gift.awaiting_subscription = False
                 if record:

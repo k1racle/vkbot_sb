@@ -52,6 +52,7 @@ from .gifts import (
 from .operators import parse_operator_ids
 from .project_web import ProjectMiddleware, protect_admin_form
 from .project_web import router as project_router
+from .recycle import router as recycle_router
 from .scenario_api import router as scenario_router
 from .vk_api import (
     VkApiError,
@@ -78,6 +79,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(scenario_router)
 app.include_router(crm_router)
 app.include_router(project_router)
+app.include_router(recycle_router)
 ATTACHMENT_DIR = Path("data")
 ATTACHMENT_DIR.mkdir(exist_ok=True)
 
@@ -167,6 +169,7 @@ async def admin_page(
         "clients",
         "broadcasts",
         "dialogs",
+        "trash",
     }:
         section = "scenarios"
     request.session.setdefault("csrf", secrets.token_urlsafe(32))
@@ -196,7 +199,12 @@ async def admin_page(
             .limit(30)
             .all()
         )
-        campaigns = session.query(Campaign).order_by(Campaign.post_id.desc()).all()
+        campaigns = (
+            session.query(Campaign)
+            .filter_by(is_deleted=False)
+            .order_by(Campaign.post_id.desc())
+            .all()
+        )
         selected_campaign = (
             None
             if new_campaign
@@ -206,6 +214,8 @@ async def admin_page(
                 else (campaigns[0] if campaigns else None)
             )
         )
+        if selected_campaign and selected_campaign.is_deleted:
+            selected_campaign = None
     form = {
         "chat_url": values.get("chat_url", ""),
         "resolved_chat_url": resolve_chat_url(values),
@@ -409,7 +419,7 @@ async def save_campaign(
         campaign = (
             session.get(Campaign, int(campaign_id)) if campaign_id.isdigit() else None
         )
-        if campaign_id and campaign is None:
+        if campaign_id and (campaign is None or campaign.is_deleted):
             raise HTTPException(404, "Кампания не найдена в этом проекте")
         duplicate = session.query(Campaign).filter_by(post_id=post_id).first()
         if duplicate and (not campaign or duplicate.id != campaign.id):
@@ -495,7 +505,9 @@ async def delete_campaign(request: Request, campaign_id: int):
     with SessionLocal() as session:
         campaign = session.get(Campaign, campaign_id)
         if campaign:
-            session.delete(campaign)
+            from .recycle import remove_campaign
+
+            remove_campaign(session, campaign)
             session.commit()
     return RedirectResponse(
         "/admin?section=campaigns&campaign_deleted=1",
@@ -509,7 +521,7 @@ async def toggle_campaign(request: Request, campaign_id: int):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
     with SessionLocal() as session:
         campaign = session.get(Campaign, campaign_id)
-        if campaign:
+        if campaign and not campaign.is_deleted:
             campaign.enabled = not campaign.enabled
             session.commit()
     return RedirectResponse(
@@ -540,7 +552,7 @@ async def test_send(request: Request):
             "/admin?section=campaigns&test_error=no_user",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    if campaign is None:
+    if campaign is None or campaign.is_deleted:
         return RedirectResponse(
             "/admin?section=campaigns&test_error=no_campaign",
             status_code=status.HTTP_303_SEE_OTHER,
@@ -665,11 +677,17 @@ async def process_comment(comment: Comment) -> str:
         values = read_settings(session)
         campaign = None
         if comment.source_type == "wall":
-            campaign = session.query(Campaign).filter_by(post_id=post_id).first()
+            campaign = (
+                session.query(Campaign)
+                .filter_by(post_id=post_id, is_deleted=False)
+                .first()
+            )
         # A disabled dedicated campaign is an explicit exclusion, not an invitation
         # to issue another campaign's promo. Videos only use the general campaign.
         if campaign is None:
-            campaign = session.query(Campaign).filter_by(post_id=0).first()
+            campaign = (
+                session.query(Campaign).filter_by(post_id=0, is_deleted=False).first()
+            )
         if already_processed(session, event_key):
             return "ok"
         clients.ensure_client(session, user_id)

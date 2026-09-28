@@ -1,3 +1,4 @@
+{% from "icons.html" import icon %}
 {% set project = request.state.project|default(none) %}
 {% set prefix = request.state.project_prefix|default('', true) %}
 {% set project_list = request.state.projects|default([], true) %}
@@ -10,7 +11,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>{{ project.name if project else 'Проекты' }} — VK Бот</title>
-  <link rel="stylesheet" href="/static/admin.css?v=5">
+  <link rel="stylesheet" href="/static/admin.css?v=6">
   <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
 </head>
 <body data-section="{{ section }}" data-project-id="{{ project.id if project else '' }}" data-project-prefix="{{ prefix }}">
@@ -19,10 +20,10 @@
     <a class="brand" href="/projects" aria-label="VK Бот — все проекты"><span class="brand-mark" aria-hidden="true">vk</span><span>VK Бот<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a>
     <div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
     <nav class="side-nav" aria-label="Основное меню">
-      <a href="/projects" aria-label="Все проекты" title="Все проекты" {% if not project %}class="active" aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▦</span>Проекты</a>
+      <a href="/projects" aria-label="Все проекты" title="Все проекты" {% if not project %}class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon("layout-grid") }}</span>Проекты</a>
       {% if project %}
-      {% for key,icon,label in [('scenarios','⌘','Сценарии'),('campaigns','◇','Кампании'),('clients','♧','Клиенты'),('broadcasts','✉','Рассылки'),('chat','◌','Общение'),('stats','▥','Статистика'),('settings','⚙','Настройки')] %}
-      <a href="{{ prefix }}/admin?section={{ key }}" aria-label="{{ label }}" title="{{ label }}" {% if section == key or (section == 'dialogs' and key == 'clients') %}class="active" aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">{{ icon }}</span>{{ label }}{% if section == key or (section == 'dialogs' and key == 'clients') %}<span class="nav-dot"></span>{% endif %}</a>
+      {% for key,icon_name,label in [('scenarios','workflow','Сценарии'),('campaigns','tag','Кампании'),('clients','users','Клиенты'),('broadcasts','send','Рассылки'),('chat','messages-square','Общение'),('stats','chart-column','Статистика'),('settings','settings','Настройки'),('trash','trash','Корзина')] %}
+      <a href="{{ prefix }}/admin?section={{ key }}" aria-label="{{ label }}" title="{{ label }}" {% if section == key or (section == 'dialogs' and key == 'clients') %}class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon(icon_name) }}</span>{{ label }}{% if section == key or (section == 'dialogs' and key == 'clients') %}<span class="nav-dot"></span>{% endif %}</a>
       {% endfor %}
       {% endif %}
     </nav>
@@ -37,14 +38,14 @@
         <select id="project-select" aria-describedby="project-context">
           <option value="/projects" {% if not project %}selected{% endif %}>Все проекты</option>
           {% for item in project_list %}
-          <option value="/p/{{ item.id }}/admin" {% if project and item.id == project.id %}selected{% endif %}>{{ item.name }} · ID {{ item.group_id }}{% if not item.enabled %} · На паузе{% endif %}</option>
+          <option value="/p/{{ item.id }}/admin" {% if project and item.id == project.id %}selected{% endif %}>{{ item.name }}{% if not item.enabled %} · На паузе{% endif %}</option>
           {% endfor %}
         </select>
         <span id="project-context" class="hint">{% if project %}{{ project.name }} · ID {{ project.group_id }}{% else %}Управление всеми сообществами{% endif %}</span>
       </div>
       <div class="topbar-right">
         <a href="/projects" class="projects-link">Все проекты</a>
-        <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="logout" type="submit">Выйти</button></form>
+        <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="logout" type="submit">{{ icon("log-out") }} Выйти</button></form>
       </div>
     </header>
     <main class="main-content" id="main-content" tabindex="-1">
@@ -58,7 +59,7 @@
     </main>
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
-  <script src="/static/admin.js?v=9" defer></script>
+  <script src="/static/admin.js?v=11" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

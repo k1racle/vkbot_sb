@@ -2,13 +2,13 @@
   const $ = (id) => document.getElementById(id),
     e = Admin.escape;
   const kinds = {
-    start: ["Начало", "▷"],
-    message: ["Сообщение", "▤"],
-    question: ["Вопрос", "?"],
-    condition: ["Условие", "◇"],
-    promo: ["Промокод", "%"],
-    operator: ["Менеджер", "♧"],
-    end: ["Завершение", "✓"],
+    start: ["Начало", "play"],
+    message: ["Сообщение", "message-square"],
+    question: ["Вопрос", "circle-question-mark"],
+    condition: ["Условие", "git-branch"],
+    promo: ["Промокод", "tag"],
+    operator: ["Менеджер", "user-round"],
+    end: ["Завершение", "circle-stop"],
   };
   let flows = [],
     campaigns = [],
@@ -122,12 +122,12 @@
     $("flow-nodes").innerHTML = graph()
       .nodes.map(
         (n) =>
-          `<article class="flow-node ${n.id === selected ? "selected" : ""}" data-id="${e(n.id)}" data-kind="${n.type}" style="left:${n.x}px;top:${n.y}px" tabindex="0" aria-label="${e(n.title)}"><button class="node-port input" aria-label="Соединить с ${e(n.title)}" data-input="${e(n.id)}"></button><div class="node-heading"><span class="node-symbol">${kinds[n.type][1]}</span><strong>${e(n.title)}</strong><small>${kinds[n.type][0]}</small></div><div class="node-content">${e(n.type === "condition" ? (n.condition === "member" ? "Подписан на сообщество?" : n.condition === "promo_sent" ? "Уже получал промокод?" : `Содержит: ${n.words || "укажите слова"}`) : n.type === "start" ? "Первое сообщение или команда «меню»" : n.type === "promo" ? campaigns.find((c) => c.id === n.campaign_id)?.title || "Выберите кампанию" : n.text || "Нажмите, чтобы настроить")}${n.media_id ? "\n▧ Прикреплён файл" : ""}</div>${exits(
+          `<article class="flow-node ${n.id === selected ? "selected" : ""}" data-id="${e(n.id)}" data-kind="${n.type}" style="left:${n.x}px;top:${n.y}px" tabindex="0" aria-label="${e(n.title)}"><button class="node-port input" aria-label="Соединить с ${e(n.title)}" data-input="${e(n.id)}"></button><div class="node-heading"><span class="node-symbol">${Admin.icon(kinds[n.type][1])}</span><strong>${e(n.title)}</strong><small>${kinds[n.type][0]}</small></div><div class="node-content">${e(n.type === "condition" ? (n.condition === "member" ? "Подписан на сообщество?" : n.condition === "promo_sent" ? "Уже получал промокод?" : `Содержит: ${n.words || "укажите слова"}`) : n.type === "start" ? "Первое сообщение или команда «меню»" : n.type === "promo" ? campaigns.find((c) => c.id === n.campaign_id)?.title || "Выберите кампанию" : n.text || "Нажмите, чтобы настроить")}${n.media_id ? `\n${Admin.icon("paperclip")} Прикреплён файл` : ""}</div>${exits(
             n,
           )
             .map(
               (o) =>
-                `<div class="node-output"><span>${o.link ? "↗ " : ""}${e(o.label)}</span>${!o.link ? `<button class="node-port ${pending?.id === n.id && pending?.key === o.key ? "pending" : ""}" data-output="${e(o.key)}" aria-label="Переход ${e(o.label)}"></button>` : ""}</div>`,
+                `<div class="node-output"><span>${o.link ? Admin.icon("external-link") + " " : ""}${e(o.label)}</span>${!o.link ? `<button class="node-port ${pending?.id === n.id && pending?.key === o.key ? "pending" : ""}" data-output="${e(o.key)}" aria-label="Переход ${e(o.label)}"></button>` : ""}</div>`,
             )
             .join("")}</article>`,
       )
@@ -245,13 +245,13 @@
         '<div class="empty"><h3>Настройки блока</h3><p>Выберите блок на схеме.</p></div>';
       return;
     }
-    let html = `<span class="eyebrow">НАСТРОЙКИ БЛОКА</span><h3>${kinds[n.type][1]} ${kinds[n.type][0]}</h3><label>Название блока<input data-field="title" value="${e(n.title)}" maxlength="120"></label>`;
+    let html = `<span class="eyebrow">НАСТРОЙКИ БЛОКА</span><h3>${Admin.icon(kinds[n.type][1])} ${kinds[n.type][0]}</h3><label>Название блока<input data-field="title" value="${e(n.title)}" maxlength="120"></label>`;
     if (n.type === "start")
       html += `<label>Название сценария<input id="scenario-title" value="${e(flow.title)}" maxlength="120"></label><p class="hint">Запускается на первое сообщение и команду «меню». Активен один входной сценарий.</p>`;
     if (["message", "question", "operator", "end"].includes(n.type))
       html += `<label>Сообщение<textarea data-field="text" maxlength="3500" placeholder="Что скажет бот?">${e(n.text)}</textarea></label><div class="hint">Имя: <code>{first_name}</code>. Ответы клиента: <code>{answer}</code> или имя вашей переменной.</div>`;
     if (["message", "question"].includes(n.type))
-      html += `<label class="upload-box">Вложение<input id="block-file" type="file" accept="image/*,video/*,audio/*,.pdf,.zip,.txt"><span class="hint">До 50 МБ. Видео и аудио отправляются как файлы.</span></label>${n.media_id ? `<div class="hint">▧ ${e(media.find((m) => m.id === n.media_id)?.filename || "Файл")} <button class="btn ghost small" id="remove-media">Убрать</button></div>` : ""}`;
+      html += `<label class="upload-box">Вложение<input id="block-file" type="file" accept="image/*,video/*,audio/*,.pdf,.zip,.txt"><span class="hint">До 50 МБ. Видео и аудио отправляются как файлы.</span></label>${n.media_id ? `<div class="hint">${Admin.icon("paperclip")} ${e(media.find((m) => m.id === n.media_id)?.filename || "Файл")} <button class="btn ghost small" id="remove-media">Убрать</button></div>` : ""}`;
     if (n.type === "question") {
       html += `<label>Сохранить ответ как<input data-field="variable" value="${e(n.variable)}" pattern="[a-z][a-z0-9_]*" maxlength="32"></label><p class="hint">Например size → в сообщении используйте {size}.</p><div class="divider"></div><h3>Ветки по ответу</h3><p class="hint">Проверяются сверху вниз. Слова разделяйте запятыми.</p>`;
       html += n.rules
@@ -261,7 +261,7 @@
         )
         .join("");
       html +=
-        '<button id="add-rule" class="btn secondary small">＋ Ветка ответа</button>';
+        '<button id="add-rule" class="btn secondary small"><svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg?v=1#plus"></use></svg> Ветка ответа</button>';
     }
     if (n.type === "message") {
       html +=
@@ -288,7 +288,7 @@
         .join("");
       if (n.buttons.length < 5)
         html +=
-          '<button id="add-button" class="btn secondary small">＋ Добавить кнопку</button>';
+          '<button id="add-button" class="btn secondary small"><svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg?v=1#plus"></use></svg> Добавить кнопку</button>';
     }
     if (n.type === "condition") {
       html += `<label>Что проверить<select data-field="condition"><option value="contains" ${n.condition === "contains" ? "selected" : ""}>Сообщение содержит слова</option><option value="member" ${n.condition === "member" ? "selected" : ""}>Подписан на сообщество</option><option value="promo_sent" ${n.condition === "promo_sent" ? "selected" : ""}>Получал промокод кампании</option></select></label>`;
@@ -610,6 +610,21 @@
         "Сценарий приостановлен. Действует обычный ответ из раздела «Общение».",
       );
     });
+  $("delete-flow").onclick = () => {
+    if (!flow || !confirm(`Удалить сценарий «${flow.title}» в корзину? Он перестанет отвечать клиентам. Несохранённые изменения будут потеряны; сохранённую версию можно восстановить.`)) return;
+    action(async () => {
+      await Admin.api(`/scenarios/${flow.id}/delete`, 'POST', { revision: flow.revision });
+      flows = flows.filter(item => item.id !== flow.id);
+      flow = null; dirty = false; selected = null; previewState = {};
+      if (flows.length) selectFlow(flows[0].id);
+      else {
+        $('editor').hidden = true;
+        $('flow-empty').hidden = false;
+        document.querySelector('.flow-toolbar').hidden = true;
+      }
+      Admin.toast('Сценарий в корзине. Для возврата откройте раздел «Корзина».');
+    });
+  };
   $("zoom-in").onclick = () => setZoom(zoom + 0.1);
   $("zoom-out").onclick = () => setZoom(zoom - 0.1);
   $("zoom-reset").onclick = () => {
@@ -709,7 +724,7 @@
         bubble(
           m.text,
           false,
-          [m.file ? "▧ " + m.file : "", m.note].filter(Boolean).join("\n"),
+          [m.file ? "Файл: " + m.file : "", m.note].filter(Boolean).join("\n"),
         );
         if (m.keyboard) {
           buttons.replaceChildren();
@@ -718,7 +733,8 @@
               const a = b.action;
               if (a.type === "open_link") {
                 const link = document.createElement("a");
-                link.textContent = a.label + " ↗";
+                link.textContent = a.label + " ";
+                link.insertAdjacentHTML("beforeend", Admin.icon("external-link"));
                 link.href = a.link;
                 link.target = "_blank";
                 link.rel = "noopener";

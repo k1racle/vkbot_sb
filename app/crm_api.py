@@ -29,12 +29,21 @@ class StartInput(BaseModel):
     expected_count: int = Field(ge=1)
 
 
+class BroadcastTitleInput(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class TestInput(BaseModel):
     user_id: int = Field(gt=0, lt=2_000_000_000)
 
 
 def get_job(session, ident):
-    job = session.query(db.Broadcast).filter_by(id=ident).with_for_update().first()
+    job = (
+        session.query(db.Broadcast)
+        .filter_by(id=ident, is_deleted=False)
+        .with_for_update()
+        .first()
+    )
     if not job:
         raise HTTPException(404, "Рассылка не найдена")
     return job
@@ -156,6 +165,7 @@ def list_broadcasts():
             "items": [
                 broadcasts.serialize(session, row)
                 for row in session.query(db.Broadcast)
+                .filter_by(is_deleted=False)
                 .order_by(db.Broadcast.created_at.desc())
                 .limit(50)
             ],
@@ -218,7 +228,7 @@ def prepare_broadcast(body: BroadcastInput):
 def broadcast_detail(ident: str, page: int = Query(1, ge=1)):
     with db.SessionLocal() as session:
         job = session.get(db.Broadcast, ident)
-        if not job:
+        if not job or job.is_deleted:
             raise HTTPException(404, "Рассылка не найдена")
         result = broadcasts.serialize(session, job)
         result["recipients"] = [
@@ -236,6 +246,19 @@ def broadcast_detail(ident: str, page: int = Query(1, ge=1)):
         ]
         result["page"] = page
         return result
+
+
+@router.patch("/broadcasts/{ident}/title")
+def rename_broadcast(ident: str, body: BroadcastTitleInput):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(422, "Введите название рассылки")
+    with db.SessionLocal() as session:
+        job = get_job(session, ident)
+        # Only the internal label changes. Never reset state or resend messages.
+        job.title = title
+        session.commit()
+        return broadcasts.serialize(session, job)
 
 
 @router.post("/broadcasts/{ident}/start")
@@ -270,7 +293,7 @@ def start_broadcast(ident: str, body: StartInput):
 async def test_broadcast(ident: str, body: TestInput):
     with db.SessionLocal() as session:
         job = session.get(db.Broadcast, ident)
-        if not job:
+        if not job or job.is_deleted:
             raise HTTPException(404, "Рассылка не найдена")
         client = session.get(db.Client, body.user_id) or db.Client(
             first_name="друг", last_name=""
@@ -314,11 +337,15 @@ async def test_broadcast(ident: str, body: TestInput):
 
 @router.post("/broadcasts/{ident}/{action}")
 def control_broadcast(ident: str, action: str):
-    if action not in {"pause", "resume", "cancel"}:
+    if action not in {"pause", "resume", "cancel", "delete"}:
         raise HTTPException(404)
     with db.SessionLocal() as session:
         job = get_job(session, ident)
-        if action == "pause" and job.status in {"queued", "running"}:
+        if action == "delete":
+            from .recycle import remove_broadcast
+
+            remove_broadcast(session, job)
+        elif action == "pause" and job.status in {"queued", "running"}:
             job.status = "paused"
         elif action == "resume" and job.status == "paused" and job.consent_confirmed:
             job.status, job.error = "queued", ""

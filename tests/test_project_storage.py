@@ -626,3 +626,48 @@ def test_unicode_credentials_normalization_limits_and_legacy_keys_unchanged(stor
         with pytest.raises(projects.ProjectValidationError):
             projects.update_project(project.id, **{field: value})
     assert projects.get_project(project.id).callback_secret == "новый секрет ✓"
+
+
+def test_trash_migrations_preserve_rows_and_restore_without_resending(storage):
+    from app import recycle
+
+    db, projects = storage.db, storage.projects
+    (legacy,) = projects.init_registry()
+    seed_models(storage, "history-before-trash")
+    before = model_snapshot(storage, storage.engine)
+    # Simulate the previous deployment, on this fixture's disposable DB only.
+    with storage.engine.begin() as connection:
+        for table, column in (
+            ("projects", "is_deleted"),
+            ("campaigns", "is_deleted"),
+            ("campaigns", "archived_post_id"),
+            ("scenarios", "is_deleted"),
+            ("broadcasts", "is_deleted"),
+        ):
+            connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
+    (legacy,) = projects.init_registry()
+    assert model_snapshot(storage, storage.engine) == before
+    with projects.project_scope(legacy):
+        with db.SessionLocal() as session:
+            recycle.remove_campaign(session, session.get(db.Campaign, 42))
+            recycle.remove_broadcast(
+                session, session.get(db.Broadcast, "same-broadcast-key")
+            )
+            session.commit()
+            assert session.get(db.Campaign, 42).post_id == -42
+            assert session.get(db.PendingGift, "same-gift-key").status == "cancelled"
+        recycle.restore("campaign", "42")
+        recycle.restore("broadcast", "same-broadcast-key")
+        with db.SessionLocal() as session:
+            campaign = session.get(db.Campaign, 42)
+            assert campaign.post_id == 594 and not campaign.enabled
+            assert not campaign.is_deleted
+            assert session.get(db.Broadcast, "same-broadcast-key").status == "cancelled"
+            assert session.get(db.PromoDelivery, 61).campaign_id == 42
+            assert session.get(db.DialogEvent, 31).text == "history-before-trash"
+    other = create_other(storage)
+    projects.delete_project(legacy.id, str(legacy.group_id))
+    assert [p.id for p in projects.init_registry()] == [other.id]
+    restored = projects.restore_project(legacy.id)
+    assert not restored.enabled and not restored.is_deleted
+    assert restored.token == legacy.token

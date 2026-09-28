@@ -69,13 +69,21 @@ def serialize(item):
 def checked(session, graph):
     return validate_graph(
         graph,
-        [c.id for c in session.query(Campaign).filter_by(enabled=True)],
+        [
+            c.id
+            for c in session.query(Campaign).filter_by(enabled=True, is_deleted=False)
+        ],
         [a.id for a in session.query(MediaAsset)],
     )
 
 
 def get_scenario(session, scenario_id, revision=None):
-    item = session.query(Scenario).filter_by(id=scenario_id).with_for_update().first()
+    item = (
+        session.query(Scenario)
+        .filter_by(id=scenario_id, is_deleted=False)
+        .with_for_update()
+        .first()
+    )
     if item is None:
         raise HTTPException(404, "Сценарий не найден")
     if revision is not None and item.revision != revision:
@@ -91,11 +99,14 @@ def list_scenarios():
     with SessionLocal() as session:
         return {
             "scenarios": [
-                serialize(s) for s in session.query(Scenario).order_by(Scenario.id)
+                serialize(s)
+                for s in session.query(Scenario)
+                .filter_by(is_deleted=False)
+                .order_by(Scenario.id)
             ],
             "campaigns": [
                 {"id": c.id, "title": c.title, "enabled": c.enabled}
-                for c in session.query(Campaign)
+                for c in session.query(Campaign).filter_by(is_deleted=False)
             ],
             "media": [
                 {"id": a.id, "filename": a.filename} for a in session.query(MediaAsset)
@@ -157,6 +168,19 @@ def pause_scenario(scenario_id: int, body: RevisionInput):
 def validate_scenario(graph: Graph):
     with SessionLocal() as session:
         return {"errors": checked(session, graph.model_dump())}
+
+
+@router.post("/scenarios/{scenario_id}/delete")
+def delete_scenario(scenario_id: int, body: RevisionInput):
+    from .recycle import scenario_lock
+
+    with SessionLocal() as session:
+        scenario_lock(session)
+        item = get_scenario(session, scenario_id, body.revision)
+        item.is_deleted, item.active = True, False
+        item.revision += 1
+        session.commit()
+        return {"ok": True}
 
 
 @router.post("/media")

@@ -138,7 +138,7 @@ class LivePort:
 
     async def promo(self, campaign_id, variables):
         campaign = self.session.get(Campaign, campaign_id)
-        if not campaign or not campaign.enabled:
+        if not campaign or campaign.is_deleted or not campaign.enabled:
             await self.emit("Эта акция сейчас недоступна.")
             return
         if not await vk_api.is_group_member(self.user_id):
@@ -497,7 +497,11 @@ async def handle_message(payload, *, preferences_only=False):
                     await port.handoff("")
                     conversation.handoff = True
                 else:
-                    scenario = session.query(Scenario).filter_by(active=True).first()
+                    scenario = (
+                        session.query(Scenario)
+                        .filter_by(active=True, is_deleted=False)
+                        .first()
+                    )
                     if scenario and scenario.published:
                         changed = (
                             conversation.scenario_id != scenario.id

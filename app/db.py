@@ -68,6 +68,10 @@ class Campaign(Base):
     attachment_type: Mapped[str] = mapped_column(String(120), default="")
     stop_words: Mapped[str] = mapped_column(Text, default="")
     plus_words: Mapped[str] = mapped_column(Text, default="")
+    is_deleted: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
+    archived_post_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     min_comment_length: Mapped[int] = mapped_column(Integer, default=1)
     one_promo_per_user: Mapped[bool] = mapped_column(default=True)
     delivery_mode: Mapped[str] = mapped_column(String(24), default="direct")
@@ -106,6 +110,9 @@ class Scenario(Base):
     version: Mapped[int] = mapped_column(default=0)
     revision: Mapped[int] = mapped_column(default=0)
     active: Mapped[bool] = mapped_column(default=False)
+    is_deleted: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
     updated_at: Mapped[object] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
@@ -202,6 +209,9 @@ class Broadcast(Base):
     message: Mapped[str] = mapped_column(Text)
     media_id: Mapped[str] = mapped_column(String(32), default="")
     status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    is_deleted: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
     error: Mapped[str] = mapped_column(Text, default="")
     consent_confirmed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
@@ -363,6 +373,8 @@ def init_db(
             "attachment_type": "VARCHAR(120) DEFAULT ''",
             "stop_words": "TEXT DEFAULT ''",
             "plus_words": "TEXT NOT NULL DEFAULT ''",
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "archived_post_id": "INTEGER",
             "min_comment_length": "INTEGER DEFAULT 1",
             "one_promo_per_user": "BOOLEAN DEFAULT TRUE",
             "delivery_mode": "VARCHAR(24) NOT NULL DEFAULT 'direct'",
@@ -376,6 +388,8 @@ def init_db(
                     )
     # Additive upgrade: keep existing dialogs and campaigns intact.
     for table, additions in {
+        "scenarios": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
+        "broadcasts": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "pending_gifts": {
             "awaiting_subscription": "BOOLEAN NOT NULL DEFAULT FALSE",
         },
