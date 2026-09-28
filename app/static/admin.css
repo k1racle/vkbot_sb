@@ -1577,3 +1577,102 @@ a:focus-visible {
     min-height: 300px;
   }
 }
+
+/* Project context stays visible, including on narrow screens. */
+.skip-link {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  transform: translateY(-200%);
+  z-index: 20;
+  padding: 12px 18px;
+  border-radius: 8px;
+  color: white;
+  background: var(--green-dark);
+}
+.skip-link:focus { transform: translateY(0); }
+.sidebar { overflow-y: auto; }
+.sidebar .brand-mark { flex-shrink: 0; }
+.workspace-card { overflow-wrap: anywhere; }
+.workspace-label { margin-top: 28px; }
+.sidebar-bottom { padding-top: 20px; }
+.project-topbar {
+  display: flex;
+  height: auto;
+  min-height: 98px;
+  gap: 20px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+.project-switcher {
+  display: grid;
+  gap: 4px;
+  width: min(100%, 470px);
+  min-width: 0;
+}
+.project-switcher label { margin: 0; font-size: 11px; color: var(--ink); }
+.project-switcher select { margin: 0; font-size: 13px; }
+.project-switcher .hint { margin: 0; overflow-wrap: anywhere; }
+.project-topbar .topbar-right { flex-shrink: 0; flex-wrap: wrap; }
+.project-topbar .logout { margin: 0; padding: 10px 0; }
+.projects-link { font-weight: 600; }
+.project-paused,
+.project-settings-link { display: flex; align-items: center; gap: 18px; justify-content: space-between; }
+.project-paused { background: #fff8e9; border-color: #eadbb7; color: #71521c; }
+.project-paused p { margin-top: 3px; }
+.project-paused .btn,
+.project-settings-link .btn { flex-shrink: 0; }
+.project-settings-link { margin-bottom: 24px; }
+.project-settings-link h2,
+.project-card h2 { overflow-wrap: anywhere; }
+.project-settings-link .hint { margin-top: 8px; }
+.projects-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 360px); gap: 24px; align-items: start; }
+.projects-list { display: grid; gap: 20px; min-width: 0; }
+.project-card,
+.project-create { min-width: 0; scroll-margin-top: 24px; }
+.project-card:target { border-color: #82b39e; box-shadow: 0 0 0 3px #267d6712; }
+.project-card .panel-heading { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+.project-card .panel-heading > div { min-width: 0; flex: 1 1 160px; }
+.project-card .panel-heading .badge { white-space: nowrap; }
+.project-readiness { display: flex; flex-wrap: wrap; gap: 8px 16px; list-style: none; padding: 0; margin: 20px 0 0; font-size: 12px; }
+.project-readiness .ready { color: var(--green-dark); }
+.project-readiness .missing { color: #805f29; }
+.callback-row { display: flex; align-items: stretch; gap: 8px; margin-top: 7px; }
+.callback-row input { margin: 0; font-size: 12px; background: #f8faf7; }
+.callback-row .btn { flex-shrink: 0; }
+.project-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 12px; }
+.project-actions form { margin: 0; }
+.project-settings { padding-top: 18px; margin-top: 20px; border-top: 1px solid var(--line); }
+.project-settings summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--green-dark); line-height: 1.6; }
+.project-settings summary:focus-visible { outline: 3px solid #99bda9; outline-offset: 4px; border-radius: 3px; }
+.project-enable { margin-top: 20px; margin-bottom: 0; border-bottom: 0; border-top: 1px solid var(--line); padding-bottom: 0; }
+.project-enable input { flex-shrink: 0; }
+.project-card .form-footer { flex-wrap: wrap; }
+.project-create .form-footer .btn { width: 100%; }
+.broadcast-project { overflow-wrap: anywhere; }
+@media (max-width: 1200px) {
+  .projects-layout { grid-template-columns: minmax(0, 1fr); }
+  .project-create { max-width: 760px; width: 100%; }
+}
+@media (max-width: 900px) {
+  .project-paused,
+  .project-settings-link { flex-wrap: wrap; }
+}
+@media (max-width: 640px) {
+  .sidebar { gap: 10px; overflow-y: visible; }
+  .sidebar .brand { flex-shrink: 0; }
+  .side-nav { justify-content: flex-start; }
+  .project-topbar { padding: 12px 14px; gap: 10px; flex-wrap: wrap; }
+  .project-switcher { width: 100%; }
+  .project-topbar .topbar-right { width: 100%; justify-content: space-between; }
+  .project-topbar .logout { padding: 5px 0; }
+  .projects-layout { gap: 20px; }
+  .project-card,
+  .project-create { scroll-margin-top: 85px; }
+  .callback-row { flex-wrap: wrap; }
+  .callback-row input { flex-basis: 100%; }
+  .project-actions,
+  .project-card .form-footer { align-items: stretch; flex-direction: column; }
+  .project-actions .btn { width: 100%; }
+  .project-card .form-footer > a { text-align: center; padding: 6px; }
+}

@@ -9,8 +9,8 @@
   const name = (c) => [c.first_name, c.last_name].filter(Boolean).join(' ') || `Клиент ${c.user_id}`;
   const avatar = (c) => c.photo_url ? `<img class="crm-avatar" src="${esc(c.photo_url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<span class="crm-avatar crm-avatar-empty" aria-hidden="true">${esc((c.first_name || '?').slice(0, 1))}</span>`;
   let selected;
-  try { selected = new Set(JSON.parse(sessionStorage.getItem('broadcast_selection') || '[]').filter((id) => Number.isInteger(id) && id > 0)); } catch { selected = new Set(); }
-  const remember = () => { try { sessionStorage.setItem('broadcast_selection', JSON.stringify([...selected])); } catch { /* Private browsing can disable storage. */ } };
+  try { selected = new Set(JSON.parse(sessionStorage.getItem(Admin.storageKey('broadcast_selection')) || '[]').filter((id) => Number.isInteger(id) && id > 0)); } catch { selected = new Set(); }
+  const remember = () => { try { sessionStorage.setItem(Admin.storageKey('broadcast_selection'), JSON.stringify([...selected])); } catch { /* Private browsing can disable storage. */ } };
   const request = async (button, fn) => {
     if (button?.disabled) return;
     if (button) button.disabled = true;
@@ -20,6 +20,12 @@
 
   if ($('crm-rows')) {
     let page = 1, pages = 1, rows = [], sequence = 0, pending = 0;
+    function exportLink() {
+      if ($('crm-export')) $('crm-export').href = `${Admin.projectPrefix}/admin/api/clients/export.xlsx?${new URLSearchParams({ q: $('crm-query').value, contacted: $('crm-filter').value || 'false' })}`;
+    }
+    $('crm-query').addEventListener('input', exportLink);
+    $('crm-filter').addEventListener('change', exportLink);
+    exportLink();
     function selection() {
       $('crm-mail-selected').textContent = `Рассылка выбранным (${selected.size})`;
       $('crm-mail-selected').disabled = !selected.size;
@@ -44,7 +50,7 @@
     }
     async function detail(id) {
       const d = await api(`/clients/${id}`), c = d.client;
-      $('crm-detail-body').innerHTML = `<div class="crm-person crm-person-large">${avatar(c)}<div><h3>${esc(name(c))}</h3><a href="${esc(c.vk_url)}" target="_blank" rel="noopener noreferrer">Открыть VK ↗</a></div></div><dl class="crm-details"><dt>Телефон</dt><dd>${esc(c.phone || 'VK не передал номер')}</dd><dt>Последнее сообщение бота</dt><dd>${esc(date(c.bot_contacted_at))}</dd><dt>Данные профиля обновлены</dt><dd>${esc(date(c.profile_updated_at))}</dd><dt>Менеджер</dt><dd>${d.assigned_operator_id ? esc(d.assigned_operator_id) : d.handoff ? 'Ожидает менеджера' : 'Не назначен'}</dd><dt>Рассылки</dt><dd>${c.unsubscribed ? 'Клиент отписался' : 'Разрешение VK проверяется перед отправкой'}</dd></dl>${c.profile_error ? `<p class="crm-error">${esc(c.profile_error)}</p>` : ''}<div class="crm-actions"><a class="btn secondary small" href="/admin?section=dialogs">Открыть обращения</a>${!c.unsubscribed ? `<button class="btn secondary small" id="crm-unsubscribe" data-id="${c.user_id}">Исключить из рассылок</button>` : ''}</div><h3>Последние входящие сообщения</h3><div class="crm-events">${d.events.map((e) => `<article><small class="muted">${esc(date(e.date))} · ${esc(e.status)}</small><p>${esc(e.text || 'Служебное событие')}</p>${e.error ? `<small class="crm-error">${esc(e.error)}</small>` : ''}</article>`).join('') || '<p class="hint">Сохранённых сообщений пока нет.</p>'}</div><h3>Участие в рассылках</h3>${d.deliveries.map((r) => `<p>${badge(r.status)} ${esc(date(r.date))} <span class="hint">${esc(r.error)}</span></p>`).join('') || '<p class="hint">Ещё не участвовал.</p>'}`;
+      $('crm-detail-body').innerHTML = `<div class="crm-person crm-person-large">${avatar(c)}<div><h3>${esc(name(c))}</h3><a href="${esc(c.vk_url)}" target="_blank" rel="noopener noreferrer">Открыть VK ↗</a></div></div><dl class="crm-details"><dt>Телефон</dt><dd>${esc(c.phone || 'VK не передал номер')}</dd><dt>Последнее сообщение бота</dt><dd>${esc(date(c.bot_contacted_at))}</dd><dt>Данные профиля обновлены</dt><dd>${esc(date(c.profile_updated_at))}</dd><dt>Менеджер</dt><dd>${d.assigned_operator_id ? esc(d.assigned_operator_id) : d.handoff ? 'Ожидает менеджера' : 'Не назначен'}</dd><dt>Рассылки</dt><dd>${c.unsubscribed ? 'Клиент отписался' : 'Разрешение VK проверяется перед отправкой'}</dd></dl>${c.profile_error ? `<p class="crm-error">${esc(c.profile_error)}</p>` : ''}<div class="crm-actions"><a class="btn secondary small" href="${esc(Admin.projectPrefix)}/admin?section=dialogs">Открыть обращения</a>${!c.unsubscribed ? `<button class="btn secondary small" id="crm-unsubscribe" data-id="${c.user_id}">Исключить из рассылок</button>` : ''}</div><h3>Последние входящие сообщения</h3><div class="crm-events">${d.events.map((e) => `<article><small class="muted">${esc(date(e.date))} · ${esc(e.status)}</small><p>${esc(e.text || 'Служебное событие')}</p>${e.error ? `<small class="crm-error">${esc(e.error)}</small>` : ''}</article>`).join('') || '<p class="hint">Сохранённых сообщений пока нет.</p>'}</div><h3>Участие в рассылках</h3>${d.deliveries.map((r) => `<p>${badge(r.status)} ${esc(date(r.date))} <span class="hint">${esc(r.error)}</span></p>`).join('') || '<p class="hint">Ещё не участвовал.</p>'}`;
       if (!$('crm-detail').open) $('crm-detail').showModal();
     }
     $('crm-detail-body').addEventListener('click', (e) => {
@@ -55,7 +61,7 @@
     $('crm-rows').addEventListener('change', (e) => { if (!e.target.matches('[data-select-client]')) return; const id = Number(e.target.dataset.selectClient); e.target.checked ? selected.add(id) : selected.delete(id); selection(); });
     $('crm-select-page').addEventListener('change', (e) => { rows.forEach((c) => e.target.checked ? selected.add(c.user_id) : selected.delete(c.user_id)); selection(); });
     $('crm-clear').addEventListener('click', () => { selected.clear(); selection(); });
-    $('crm-mail-selected').addEventListener('click', () => { remember(); location.href = '/admin?section=broadcasts&audience=selected'; });
+    $('crm-mail-selected').addEventListener('click', () => { remember(); location.href = Admin.projectPrefix + '/admin?section=broadcasts&audience=selected'; });
     $('crm-search').addEventListener('submit', (e) => { e.preventDefault(); page = 1; request(e.submitter, load); });
     $('crm-prev').addEventListener('click', () => { page--; request(null, load); });
     $('crm-next').addEventListener('click', () => { page++; request(null, load); });

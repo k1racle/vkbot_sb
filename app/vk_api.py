@@ -14,15 +14,31 @@ class VkApiError(RuntimeError):
 
 
 async def call(method: str, **params):
+    from .projects import current_project, get_project
+
+    project = current_project.get()
+    if project is not None:
+        fresh = get_project(project.id)
+        if fresh is None or not fresh.enabled:
+            raise VkApiError("Проект приостановлен. Включите его на странице проектов.")
     settings = get_settings()
-    params.update(access_token=settings.vk_group_token, v=settings.vk_api_version)
+    if not settings.vk_group_token:
+        raise VkApiError("В проекте не задан токен сообщества")
+    return await _request(method, settings.vk_group_token, **params)
+
+
+async def _request(method: str, token: str, **params):
+    params.update(access_token=token, v=get_settings().vk_api_version)
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(f"https://api.vk.com/method/{method}", data=params)
     response.raise_for_status()
     payload = response.json()
     if "error" in payload:
         error = payload["error"]
-        raise VkApiError(f"{error.get('error_code')}: {error.get('error_msg')}")
+        message = str(error.get("error_msg") or "VK API error").replace(
+            token, "[redacted]"
+        )
+        raise VkApiError(f"{error.get('error_code')}: {message}")
     return payload["response"]
 
 
@@ -60,6 +76,40 @@ async def reply_to_wall_comment(comment, message: str, guid: str) -> None:
         post_id=comment.object_id,
         reply_to_comment=comment.comment_id,
         from_group=get_settings().vk_group_id,
+        message=message,
+        guid=guid,
+    )
+
+
+def video_reply_available() -> bool:
+    from .projects import current_project, get_project
+
+    selected = current_project.get()
+    fresh = get_project(selected.id) if selected else None
+    return bool(fresh and fresh.enabled and fresh.video_token)
+
+
+async def reply_to_video_comment(comment, message: str, guid: str) -> None:
+    """Use the owner's optional user credential ONLY for this API operation.
+
+    VK's official video schema accepts a user token and from_group=1. Never
+    publish as the personal account or use this token to bypass DM permissions.
+    """
+    from .projects import current_project, get_project
+
+    selected = current_project.get()
+    project = get_project(selected.id) if selected else None
+    if not project or not project.enabled or not project.video_token:
+        raise VkApiError("Для ответа под видео подключите токен в настройках проекта")
+    if comment.source_type != "video" or comment.owner_id != -project.group_id:
+        raise ValueError("Видео должно принадлежать текущему сообществу")
+    await _request(
+        "video.createComment",
+        project.video_token,
+        owner_id=comment.owner_id,
+        video_id=comment.object_id,
+        reply_to_comment=comment.comment_id,
+        from_group=1,
         message=message,
         guid=guid,
     )

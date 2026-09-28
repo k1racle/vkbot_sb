@@ -1,3 +1,64 @@
+{% set project = request.state.project|default(none) %}
+{% set prefix = request.state.project_prefix|default('', true) %}
+{% set project_list = request.state.projects|default([], true) %}
+{% set csrf = csrf|default(request.session.get('csrf', ''), true) %}
+{% set section = section|default('projects') %}
 <!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>VK Бот — панель управления</title><link rel="stylesheet" href="/static/admin.css?v=4"><link rel="icon" href="/static/mark.svg" type="image/svg+xml"></head>
-<body data-section="{{ section }}"><aside class="sidebar"><a class="brand" href="/admin"><span class="brand-mark">sb</span><span>VK Бот<small>SARKISIAN BRAND</small></span></a><div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div><nav class="side-nav" aria-label="Основное меню">{% for key,icon,label in [('scenarios','⌘','Сценарии'),('campaigns','◇','Кампании'),('clients','♧','Клиенты'),('broadcasts','✉','Рассылки'),('chat','◌','Общение'),('stats','▥','Статистика'),('settings','⚙','Настройки')] %}<a href="/admin?section={{ key }}" {% if section == key or (section == 'dialogs' and key == 'clients') %}class="active" aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">{{ icon }}</span>{{ label }}{% if section == key or (section == 'dialogs' and key == 'clients') %}<span class="nav-dot"></span>{% endif %}</a>{% endfor %}</nav><div class="sidebar-bottom"><div class="workspace-card"><span class="dot green"></span><span>Ваше сообщество<small>Панель управления VK</small></span></div><form action="/logout" method="post"><button class="logout">↗ Выйти из аккаунта</button></form></div></aside><div class="app-shell"><header class="topbar"><span>Рабочее пространство <span class="breadcrumb">/ VK Бот</span></span><div class="topbar-right"><span class="muted small">SARKISIAN</span><span class="avatar">SB</span></div></header><main class="main-content"><div id="page-notice" role="status" hidden class="notice"></div>{% block content %}{% endblock %}</main></div><div id="toast" class="toast" role="status" hidden></div><script src="/static/admin.js?v=7" defer></script>{% block scripts %}{% endblock %}</body></html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>{{ project.name if project else 'Проекты' }} — VK Бот</title>
+  <link rel="stylesheet" href="/static/admin.css?v=5">
+  <link rel="icon" href="/static/mark.svg" type="image/svg+xml">
+</head>
+<body data-section="{{ section }}" data-project-id="{{ project.id if project else '' }}" data-project-prefix="{{ prefix }}">
+  <a class="skip-link" href="#main-content">Перейти к содержимому</a>
+  <aside class="sidebar">
+    <a class="brand" href="/projects" aria-label="VK Бот — все проекты"><span class="brand-mark" aria-hidden="true">vk</span><span>VK Бот<small>ПАНЕЛЬ УПРАВЛЕНИЯ</small></span></a>
+    <div class="workspace-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+    <nav class="side-nav" aria-label="Основное меню">
+      <a href="/projects" aria-label="Все проекты" title="Все проекты" {% if not project %}class="active" aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▦</span>Проекты</a>
+      {% if project %}
+      {% for key,icon,label in [('scenarios','⌘','Сценарии'),('campaigns','◇','Кампании'),('clients','♧','Клиенты'),('broadcasts','✉','Рассылки'),('chat','◌','Общение'),('stats','▥','Статистика'),('settings','⚙','Настройки')] %}
+      <a href="{{ prefix }}/admin?section={{ key }}" aria-label="{{ label }}" title="{{ label }}" {% if section == key or (section == 'dialogs' and key == 'clients') %}class="active" aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">{{ icon }}</span>{{ label }}{% if section == key or (section == 'dialogs' and key == 'clients') %}<span class="nav-dot"></span>{% endif %}</a>
+      {% endfor %}
+      {% endif %}
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="workspace-card"><span class="dot {% if project and project.enabled %}green{% endif %}"></span><span>{{ project.name if project else 'Все сообщества' }}<small>{% if project %}ID {{ project.group_id }} · {{ 'Включён' if project.enabled else 'На паузе' }}{% else %}{{ project_list|length }} проектов{% endif %}</small></span></div>
+    </div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar project-topbar">
+      <div class="project-switcher">
+        <label for="project-select">Текущий проект</label>
+        <select id="project-select" aria-describedby="project-context">
+          <option value="/projects" {% if not project %}selected{% endif %}>Все проекты</option>
+          {% for item in project_list %}
+          <option value="/p/{{ item.id }}/admin" {% if project and item.id == project.id %}selected{% endif %}>{{ item.name }} · ID {{ item.group_id }}{% if not item.enabled %} · На паузе{% endif %}</option>
+          {% endfor %}
+        </select>
+        <span id="project-context" class="hint">{% if project %}{{ project.name }} · ID {{ project.group_id }}{% else %}Управление всеми сообществами{% endif %}</span>
+      </div>
+      <div class="topbar-right">
+        <a href="/projects" class="projects-link">Все проекты</a>
+        <form action="/logout" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button class="logout" type="submit">Выйти</button></form>
+      </div>
+    </header>
+    <main class="main-content" id="main-content" tabindex="-1">
+      <div id="page-notice" role="status" hidden class="notice"></div>
+      {% if notice|default(none) %}<div class="notice" role="status">{{ notice }}</div>{% endif %}
+      {% if error|default(none) %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+      {% if project and not project.enabled %}
+      <div class="notice project-paused" role="status"><div><strong>Проект «{{ project.name }}» на паузе</strong><p>Автоматическая обработка и отправка сообщений приостановлены. Подготовьте настройки и включите проект, когда всё будет готово.</p></div><a class="btn secondary small" href="/projects#project-{{ project.id }}">Управлять проектом</a></div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/static/admin.js?v=9" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

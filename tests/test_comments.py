@@ -242,7 +242,11 @@ def test_ignore_other_owners_groups_and_unsupported_types(comments):
     body["object"]["video_id"] = "invalid"
     variants.append(body)
     for body in variants:
-        assert client.post("/vk/callback", json=body).text == "ok"
+        response = client.post("/vk/callback", json=body)
+        if body["group_id"] != 123:
+            assert response.status_code == 403
+        else:
+            assert response.text == "ok"
     sent.assert_not_called()
     with sessions() as session:
         assert session.query(db.ProcessedComment).count() == 0

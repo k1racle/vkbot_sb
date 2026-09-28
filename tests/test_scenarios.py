@@ -32,6 +32,11 @@ from app.flows import Graph, starter_graph, validate_graph
 
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
+    from app.config import get_base_settings
+
+    monkeypatch.setattr(
+        get_base_settings(), "projects_key_file", str(tmp_path / "projects.key")
+    )
     # Each TestClient owns a different event loop. Never carry async locks across tests.
     monkeypatch.setattr(dialog, "_locks", weakref.WeakValueDictionary())
     slots = asyncio.Semaphore(4)

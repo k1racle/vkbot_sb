@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+{% set all_projects = projects|default(project_list, true) %}
+<div class="page-heading">
+  <div><span class="eyebrow">СООБЩЕСТВА VK</span><h1>Проекты <span class="badge">{{ all_projects|length }}</span></h1><p>Сценарии, клиенты и рассылки каждого сообщества — в своём проекте.</p></div>
+  <a class="btn" href="#new-project">＋ Добавить проект</a>
+</div>
+<div class="projects-layout">
+  <section class="projects-list" aria-label="Ваши проекты">
+    {% for item in all_projects %}
+    <article class="panel project-card" id="project-{{ item.id }}" aria-labelledby="project-title-{{ item.id }}">
+      <div class="panel-heading">
+        <div><h2 id="project-title-{{ item.id }}">{{ item.name }}</h2><p class="hint">Сообщество <a href="https://vk.com/club{{ item.group_id }}" target="_blank" rel="noopener noreferrer">ID {{ item.group_id }} ↗</a>{% if item.is_legacy %} · Исходный проект{% endif %}</p></div>
+        <span class="badge {{ 'live' if item.enabled else 'warning' }}">{{ 'Включён' if item.enabled else 'На паузе' }}</span>
+      </div>
+      <ul class="project-readiness" aria-label="Данные подключения">
+        <li class="{{ 'ready' if item.has_token else 'missing' }}">{{ '✓' if item.has_token else '○' }} Токен {{ 'сохранён' if item.has_token else 'не задан' }}</li>
+        <li class="{{ 'ready' if item.has_secret else 'missing' }}">{{ '✓' if item.has_secret else '○' }} Секрет {{ 'сохранён' if item.has_secret else 'не задан' }}</li>
+        <li class="{{ 'ready' if item.has_confirmation else 'missing' }}">{{ '✓' if item.has_confirmation else '○' }} Код {{ 'сохранён' if item.has_confirmation else 'не задан' }}</li>
+      </ul>
+      <label for="callback-{{ item.id }}">Адрес Callback API</label>
+      <div class="callback-row"><input id="callback-{{ item.id }}" type="url" readonly value="{{ callback_base_url|default(request.base_url, true) }}vk/callback/{{ item.id }}" spellcheck="false"><button type="button" class="btn secondary small" data-copy-target="callback-{{ item.id }}" aria-label="Скопировать адрес Callback API проекта {{ item.name }}" hidden>Копировать</button></div>
+      <div class="project-actions">
+        <a class="btn" href="/p/{{ item.id }}/admin">Открыть проект →</a>
+        <form method="post" action="/projects/{{ item.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn secondary">Проверить подключение</button></form>
+      </div>
+      <p class="hint">Проверка сверяет токен с ID сообщества. Сообщения клиентам не отправляются.</p>
+      <details class="project-settings" {% if error|default(none) %}open{% endif %}>
+        <summary>Подключение и настройки проекта<span class="sr-only"> {{ item.name }}</span></summary>
+        <form method="post" action="/projects/{{ item.id }}/settings" data-unsaved>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <div class="form-grid">
+            <label>Название проекта<input name="name" value="{{ item.name }}" required maxlength="120" autocomplete="off"></label>
+            <label>ID сообщества<input value="{{ item.group_id }}" readonly aria-describedby="group-help-{{ item.id }}"><span id="group-help-{{ item.id }}" class="hint">ID нельзя изменить. Для другого сообщества создайте проект.</span></label>
+          </div>
+          <p class="hint spaced" id="credentials-help-{{ item.id }}">Чтобы сохранить текущие данные доступа, оставьте поля пустыми. Заполните только те, которые хотите заменить.</p>
+          <label>Токен сообщества<input name="token" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="credentials-help-{{ item.id }}" placeholder="{{ 'Сохранён · оставьте пустым' if item.has_token else 'Токен ещё не задан' }}"></label>
+          <div class="form-grid">
+            <label>Секрет Callback API<input name="callback_secret" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="credentials-help-{{ item.id }}" placeholder="{{ 'Сохранён · оставьте пустым' if item.has_secret else 'Секрет ещё не задан' }}"></label>
+            <label>Код подтверждения VK<input name="confirmation_code" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="credentials-help-{{ item.id }}" placeholder="{{ 'Сохранён · оставьте пустым' if item.has_confirmation else 'Код ещё не задан' }}"></label>
+          </div>
+          <div class="info-card spaced">
+            <h3>Ответы под видео</h3>
+            <p>Необязательно. VK требует пользовательский токен администратора этого сообщества с доступом к видео. Используйте собственный токен, полученный разрешённым VK способом. Бот использует его только для ответов под видео от имени группы, не для личных сообщений.</p>
+            <label>Пользовательский токен для видео<input name="video_token" type="password" maxlength="4096" autocomplete="new-password" spellcheck="false" placeholder="{{ 'Сохранён · оставьте пустым' if item.has_video_token else 'Не подключён' }}"></label>
+            <p class="hint">{{ '✓ Токен сохранён.' if item.has_video_token else 'Токен не задан.' }} Хранится зашифрованным. Сохранение не проверяет права — проверьте ответ на собственном тестовом комментарии. Если VK отклонит токен, причина появится в статистике.</p>
+            {% if item.has_video_token %}<label class="check"><input name="clear_video_token" type="checkbox" value="1">Удалить токен для видео</label>{% endif %}
+            <p class="hint">Без токена приглашение отправляется в разрешённую личку. Если она закрыта, подарок остаётся доступен после перехода в чат; ссылку можно разместить в описании видео. Уже обработанные комментарии автоматически не повторяются.</p>
+          </div>
+          <label class="switch-row project-enable"><span><strong>Включить проект</strong><small>Для включения нужны токен, секрет Callback API и код подтверждения. Выключение приостанавливает обработку и отправку сообщений.</small></span><input name="enabled" type="checkbox" value="1" {% if item.enabled %}checked{% endif %}></label>
+          <div class="form-footer"><a href="/p/{{ item.id }}/admin?section=settings">К настройкам бота</a><button class="btn" type="submit">Сохранить проект</button></div>
+        </form>
+      </details>
+    </article>
+    {% else %}
+    <div class="panel empty"><div class="empty-art" aria-hidden="true">▦</div><h2>Подключите первое сообщество</h2><p>Добавьте название и ID группы VK. Ключи можно настроить позже — новый проект появится на паузе.</p><a class="btn secondary" href="#new-project">Создать проект</a></div>
+    {% endfor %}
+  </section>
+  <section class="panel project-create" id="new-project" aria-labelledby="new-project-title">
+    <span class="eyebrow">НОВОЕ СООБЩЕСТВО</span><h2 id="new-project-title">Добавить проект</h2>
+    <p class="hint spaced">Начните с названия и ID сообщества. Новый проект всегда создаётся на паузе; включить его можно в настройках после подключения.</p>
+    <form method="post" action="/projects" data-unsaved>
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label>Название проекта<input name="name" required maxlength="120" autocomplete="off" placeholder="Например, магазин на Тверской"></label>
+      <label>ID сообщества VK<input name="group_id" type="number" inputmode="numeric" min="1" step="1" required placeholder="123456789" aria-describedby="new-group-help"><span class="hint" id="new-group-help">Положительное число без минуса и префикса club. После создания изменить нельзя.</span></label>
+      <details class="project-settings">
+        <summary>Данные подключения <span class="hint">· можно позже</span></summary>
+        <label>Токен сообщества<input name="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="Ключ доступа сообщества"></label>
+        <label>Секрет Callback API<input name="callback_secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="Секретная строка"></label>
+        <label>Код подтверждения VK<input name="confirmation_code" type="password" autocomplete="new-password" spellcheck="false" placeholder="Код из настроек Callback API"></label>
+        <p class="hint spaced">Секрет и код должны совпадать с настройками Callback API в VK. Адрес для подключения появится после создания проекта.</p>
+      </details>
+      <div class="form-footer"><button class="btn" type="submit">Создать на паузе</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

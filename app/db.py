@@ -1,4 +1,6 @@
 from pathlib import Path
+from threading import RLock
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import (
     JSON,
@@ -9,13 +11,16 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    event,
     func,
     inspect,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.pool import NullPool, StaticPool
 
-from .config import get_settings
+from .config import get_base_settings, get_settings
 
 
 class Base(DeclarativeBase):
@@ -62,6 +67,7 @@ class Campaign(Base):
     attachment_name: Mapped[str] = mapped_column(String(255), default="")
     attachment_type: Mapped[str] = mapped_column(String(120), default="")
     stop_words: Mapped[str] = mapped_column(Text, default="")
+    plus_words: Mapped[str] = mapped_column(Text, default="")
     min_comment_length: Mapped[int] = mapped_column(Integer, default=1)
     one_promo_per_user: Mapped[bool] = mapped_column(default=True)
     delivery_mode: Mapped[str] = mapped_column(String(24), default="direct")
@@ -229,9 +235,14 @@ class WorkLease(Base):
 
 
 def make_engine():
-    settings = get_settings()
-    if settings.database_url.startswith("sqlite:///./"):
-        Path("data").mkdir(exist_ok=True)
+    settings = get_base_settings()
+    url = make_url(settings.database_url)
+    if url.get_backend_name() == "sqlite" and url.database not in (
+        None,
+        "",
+        ":memory:",
+    ):
+        Path(url.database).parent.mkdir(parents=True, exist_ok=True)
     connect_args = (
         {"check_same_thread": False}
         if settings.database_url.startswith("sqlite")
@@ -241,10 +252,104 @@ def make_engine():
 
 
 engine = make_engine()
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+_project_engines: WeakKeyDictionary = WeakKeyDictionary()
+_project_engine_lock = RLock()
 
 
-def init_db() -> None:
+def get_project_engine(project) -> Engine:
+    """Return an isolated engine without rebinding any global engine or session.
+
+    PostgreSQL connections have exactly one application schema in search_path;
+    even raw migration SQL cannot fall through to legacy/public tables. New
+    engines use NullPool so idle projects do not reserve database connections.
+    """
+    from .projects import validate_project_id
+
+    validate_project_id(project.id)
+    if project.is_legacy:
+        return engine
+    with _project_engine_lock:
+        cached = _project_engines.setdefault(engine, {})
+        if project.id in cached:
+            return cached[project.id]
+        backend = engine.url.get_backend_name()
+        if backend == "postgresql":
+            schema = f"project_{project.id}"
+            quoted = engine.dialect.identifier_preparer.quote_identifier(schema)
+            with engine.begin() as connection:
+                connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {quoted}"))
+            isolated = create_engine(engine.url, poolclass=NullPool)
+
+            @event.listens_for(isolated, "connect", insert=True)
+            def set_project_schema(dbapi_connection, _connection_record):
+                # SET must survive transaction rollback, including the dialect's
+                # initial introspection. Register before dialect initialization.
+                previous = dbapi_connection.autocommit
+                dbapi_connection.autocommit = True
+                try:
+                    with dbapi_connection.cursor() as cursor:
+                        cursor.execute(f"SET SESSION search_path TO {quoted}")
+                finally:
+                    dbapi_connection.autocommit = previous
+
+        elif backend == "sqlite":
+            database = engine.url.database
+            if database in (None, "", ":memory:"):
+                # Independent memory databases are useful for isolated tests;
+                # ordinary development uses separate files beside the legacy DB.
+                isolated = create_engine(
+                    "sqlite://",
+                    poolclass=StaticPool,
+                    connect_args={"check_same_thread": False},
+                )
+            else:
+                if database.startswith("file:"):
+                    raise ValueError(
+                        "Project storage requires a regular SQLite database path"
+                    )
+                path = Path(database).resolve().with_name(f"project_{project.id}.db")
+                isolated = create_engine(
+                    engine.url.set(database=str(path)),
+                    poolclass=NullPool,
+                    connect_args={"check_same_thread": False},
+                )
+        else:
+            raise ValueError("Project storage supports PostgreSQL and SQLite only")
+        cached[project.id] = isolated
+        return isolated
+
+
+def dispose_project_engines() -> None:
+    """Release cached project engines (shutdown/tests); never dispose legacy."""
+    with _project_engine_lock:
+        for cached in _project_engines.values():
+            for isolated in cached.values():
+                isolated.dispose()
+        _project_engines.clear()
+
+
+def current_engine() -> Engine:
+    from .projects import current_project
+
+    project = current_project.get()
+    return engine if project is None else get_project_engine(project)
+
+
+def SessionLocal() -> Session:
+    """Capture the project's engine when constructing each independent session.
+
+    No context retains the old legacy behavior for scripts/tests. HTTP handlers
+    and workers must establish project_scope before accessing project data.
+    """
+    return Session(bind=current_engine(), expire_on_commit=False)
+
+
+def init_db(
+    target_engine: Engine | None = None,
+    migration_owner_group_id: int | None = None,
+) -> None:
+    # This is a local variable, deliberately never a mutation of db.engine.
+    engine = target_engine if target_engine is not None else current_engine()
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
     backfill_subscription = "awaiting_subscription" not in {
@@ -257,6 +362,7 @@ def init_db() -> None:
             "attachment_name": "VARCHAR(255) DEFAULT ''",
             "attachment_type": "VARCHAR(120) DEFAULT ''",
             "stop_words": "TEXT DEFAULT ''",
+            "plus_words": "TEXT NOT NULL DEFAULT ''",
             "min_comment_length": "INTEGER DEFAULT 1",
             "one_promo_per_user": "BOOLEAN DEFAULT TRUE",
             "delivery_mode": "VARCHAR(24) NOT NULL DEFAULT 'direct'",
@@ -311,6 +417,17 @@ def init_db() -> None:
     if "processed_comments" in inspect(engine).get_table_names():
         # Preserve the old table as an archive. Copy records and delivery history
         # once per event, with the same identity the new callback handler uses.
+        if migration_owner_group_id is None:
+            from .projects import current_project
+
+            project = current_project.get()
+            migration_owner_group_id = (
+                project.group_id if project is not None else get_settings().vk_group_id
+            )
+        if migration_owner_group_id <= 0:
+            raise ValueError(
+                "A positive migration owner group is required for comment history"
+            )
         with engine.begin() as connection:
             connection.execute(
                 text("""
@@ -326,7 +443,7 @@ def init_db() -> None:
                 WHERE 1=1
                 ON CONFLICT (event_key) DO NOTHING
             """),
-                {"owner": -get_settings().vk_group_id},
+                {"owner": -migration_owner_group_id},
             )
 
 

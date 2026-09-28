@@ -4,6 +4,8 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from . import broadcasts, clients, db, vk_api
@@ -71,6 +73,25 @@ def refresh_clients():
         count = session.query(db.Client).update({"profile_requested": True})
         session.commit()
         return {"queued": count}
+
+
+@router.get("/clients/export.xlsx")
+def export_clients(q: str = Query("", max_length=120), contacted: bool = False):
+    from . import exports, projects
+
+    output = exports.client_workbook(q, contacted)
+    project = projects.current_project.get()
+    filename = f"clients-project-{project.id if project else 'legacy'}.xlsx"
+    return StreamingResponse(
+        exports.chunks(output),
+        media_type=exports.MIME,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(output.close),
+    )
 
 
 @router.get("/clients/{user_id}")

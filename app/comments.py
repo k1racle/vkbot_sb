@@ -1,6 +1,28 @@
 """Normalize supported VK comment events without mixing their ID namespaces."""
 
 from dataclasses import dataclass
+import re
+
+
+def matches_plus_words(comment: str, configured: str) -> bool:
+    """Any whole word/phrase, case insensitive; an empty list is unrestricted.
+
+    No stemming: 'крем' is not 'крема'. Escape admin text, never execute regex.
+    Whitespace is normalized and Russian ё/е are treated equivalently.
+    """
+
+    def normalize(value):
+        return " ".join(value.casefold().replace("ё", "е").split())
+
+    words = [
+        normalize(w)
+        for w in (configured or "").replace(",", "\n").splitlines()
+        if w.strip()
+    ]
+    value = normalize(comment)
+    return not words or any(
+        re.search(r"(?<!\w)" + re.escape(word) + r"(?!\w)", value) for word in words
+    )
 
 
 def integer(value):

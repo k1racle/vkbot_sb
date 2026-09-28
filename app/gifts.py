@@ -140,11 +140,6 @@ async def invite_to_chat(session, comment, campaign):
     record = (
         session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
     )
-    if comment.source_type != "wall":
-        record.status = "invite_unsupported"
-        record.error = "Приглашение под видео недоступно с ключом сообщества. Используйте прямую отправку."
-        session.commit()
-        return
     active_key = f"{comment.user_id}:{campaign.id}"
     if session.query(PendingGift).filter_by(active_key=active_key).first():
         record.status = "invite_duplicate"
@@ -166,7 +161,40 @@ async def invite_to_chat(session, comment, campaign):
     # A failed/ambiguous public reply must not erase the customer's entitlement.
     # Duplicate callbacks never create another invite; wall guid is stable too.
     session.commit()
-    await vk_api.reply_to_wall_comment(comment, invitation, guid=gift.id)
+    if comment.source_type == "wall":
+        await vk_api.reply_to_wall_comment(comment, invitation, guid=gift.id)
+    elif vk_api.video_reply_available():
+        await vk_api.reply_to_video_comment(comment, invitation, guid=gift.id)
+    else:
+        # No personal credential: try only a permitted community DM, never
+        # bypass permission 901. Retain the gift even when neither path works.
+        from .db import Client
+
+        client = session.get(Client, comment.user_id)
+        allowed = not (
+            client and (client.unsubscribed or client.messages_allowed is False)
+        ) and await vk_api.is_messages_allowed(comment.user_id)
+        if allowed:
+            try:
+                await vk_api.send_message(
+                    comment.user_id,
+                    invitation,
+                    random_id=random_id(f"video-invite:{gift.id}"),
+                    keyboard=gift_keyboard("Получить подарок"),
+                )
+                record.status = "video_invited_dm"
+                session.commit()
+                return
+            except vk_api.VkApiError as error:
+                if error.code not in {901, 902}:
+                    raise
+        record.status = "video_waiting_chat"
+        record.error = (
+            "Подарок сохранён, приглашение не отправлено: нет токена для ответа под видео "
+            "и разрешения на личные сообщения. Подключите токен в «Проектах» или "
+            "разместите ссылку на чат в описании видео: " + chat_url
+        )
+        session.commit()
 
 
 async def handle_gift_request(session, event, message, incoming, *, automatic=False):

@@ -422,6 +422,7 @@ def test_media_is_uploaded_only_after_entering_chat(invitations, monkeypatch, tm
 
 def test_invite_filters_and_video_limitation(invitations, monkeypatch):
     client, sessions, replies, sent = invitations
+    monkeypatch.setattr(vk_api, "is_messages_allowed", AsyncMock(return_value=False))
     campaign(
         sessions, delivery_mode="chat_invite", min_comment_length=5, stop_words="спам"
     )
@@ -434,11 +435,11 @@ def test_invite_filters_and_video_limitation(invitations, monkeypatch):
     replies.assert_not_called()
     sent.assert_not_called()
     with sessions() as session:
-        assert session.query(db.PendingGift).count() == 0
+        assert session.query(db.PendingGift).count() == 1
         assert {row.status for row in session.query(db.ProcessedComment)} == {
             "too_short",
             "stop_word",
-            "invite_unsupported",
+            "video_waiting_chat",
         }
 
 

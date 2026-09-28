@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import func, or_, update
 
 from . import db, vk_api
-from .clients import insert_once, now, save_profile
+from .clients import defer_outgoing_audits, insert_once, now, save_profile
 from .config import get_settings
 from .flows import render
 from .gifts import random_id
@@ -369,27 +369,71 @@ async def refresh_profiles():
 
 
 async def worker_tick():
+    from . import projects
+
+    project = projects.current_project.get()
+    if project is not None:
+        fresh = projects.get_project(project.id)
+        if fresh is None or not fresh.enabled:
+            return
     owner = uuid4().hex
     if not claim_worker(owner):
         return
     try:
-        recipient = claim_recipient()
-        if recipient:
-            await send_recipient(*recipient)
-        else:
-            await refresh_profiles()
+        with defer_outgoing_audits():
+            recipient = claim_recipient()
+            if recipient:
+                await send_recipient(*recipient)
+            else:
+                await refresh_profiles()
     finally:
         release_worker(owner)
 
 
 async def worker_loop():
-    while True:
-        try:
-            await worker_tick()
-        except Exception:
-            logger.exception("Background outbound job failed")
-        # Conservative pace; VK rate-limit responses use persisted backoff too.
-        await asyncio.sleep(1.0)
+    from . import projects
+
+    # One lightweight task per enabled group: a slow VK response in one group
+    # must not prevent the others from making progress. No idle DB pool per group.
+    workers = {}
+
+    async def project_worker(project_id):
+        while True:
+            project = projects.get_project(project_id)
+            if project is None or not project.enabled:
+                return
+            try:
+                with projects.project_scope(project):
+                    await worker_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Background outbound job failed: project=%s", project_id
+                )
+            await asyncio.sleep(1.0)
+
+    try:
+        while True:
+            try:
+                for project in projects.list_projects():
+                    task = workers.get(project.id)
+                    if project.enabled and (task is None or task.done()):
+                        workers[project.id] = asyncio.create_task(
+                            project_worker(project.id)
+                        )
+                # Do not cancel a paused group's in-flight call mid-delivery.
+                # It will stop at the next tick; the API guard blocks new calls.
+                workers = {
+                    key: task for key, task in workers.items() if not task.done()
+                }
+            except Exception:
+                logger.exception("Project worker supervisor failed")
+            await asyncio.sleep(1.0)
+    finally:
+        for task in workers.values():
+            task.cancel()
+        await asyncio.gather(*workers.values(), return_exceptions=True)
 
 
 async def stop_worker(task):

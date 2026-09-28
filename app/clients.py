@@ -2,6 +2,8 @@
 
 import logging
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -13,6 +15,29 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import db
 
 logger = logging.getLogger(__name__)
+_outgoing_audits = ContextVar("outgoing_audits", default=None)
+
+
+@contextmanager
+def defer_outgoing_audits():
+    """Flush accepted sends after the caller's transactions have closed.
+
+    SQLite only permits one writer; opening a second session from inside a
+    dialog transaction loses the outgoing audit. Keep this buffer task-local,
+    and flush even if later dialog work rolls back. The project scope must wrap
+    this context so the audit is written back to its original group.
+    """
+    if _outgoing_audits.get() is not None:
+        yield
+        return
+    pending = []
+    token = _outgoing_audits.set(pending)
+    try:
+        yield
+    finally:
+        _outgoing_audits.reset(token)
+        for user_id, random_id in pending:
+            record_outgoing(user_id, random_id)
 
 
 def now():
@@ -39,6 +64,10 @@ def ensure_client(session, user_id):
 
 def record_outgoing(user_id, random_id):
     """Called only AFTER VK accepted a send. Audit failure must not resend it."""
+    pending = _outgoing_audits.get()
+    if pending is not None:
+        pending.append((user_id, random_id))
+        return
     try:
         with db.SessionLocal() as session:
             client = ensure_client(session, user_id)

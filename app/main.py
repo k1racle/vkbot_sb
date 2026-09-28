@@ -5,25 +5,32 @@ import secrets
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, Request, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
-from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import broadcasts, clients
+from . import broadcasts, clients, projects
 from .comments import Comment, normalize_comment
-from .config import get_settings
+from .config import SettingsProxy
 from .crm_api import router as crm_router
 from .db import (
     Campaign,
     ProcessedComment,
     SessionLocal,
     already_processed,
-    init_db,
     read_settings,
     save_settings,
 )
@@ -43,6 +50,8 @@ from .gifts import (
     validate_chat_url,
 )
 from .operators import parse_operator_ids
+from .project_web import ProjectMiddleware, protect_admin_form
+from .project_web import router as project_router
 from .scenario_api import router as scenario_router
 from .vk_api import (
     VkApiError,
@@ -52,11 +61,13 @@ from .vk_api import (
     upload_file_for_message,
 )
 
-settings = get_settings()
+settings = SettingsProxy()
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
-app = FastAPI(title="VK Бот")
+app = FastAPI(title="VK Бот", dependencies=[Depends(protect_admin_form)])
 templates = Jinja2Templates(directory="app/templates")
+# SessionMiddleware must be outside ProjectMiddleware: it supplies owner auth.
+app.add_middleware(ProjectMiddleware)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.admin_session_secret,
@@ -66,14 +77,17 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(scenario_router)
 app.include_router(crm_router)
+app.include_router(project_router)
 ATTACHMENT_DIR = Path("data")
 ATTACHMENT_DIR.mkdir(exist_ok=True)
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    init_db()
-    clients.backfill_clients()
+    projects.init_registry()
+    for project in projects.list_projects():
+        with projects.project_scope(project):
+            clients.backfill_clients()
     app.state.outbound_worker = (
         asyncio.create_task(broadcasts.worker_loop())
         if settings.background_jobs_enabled
@@ -112,15 +126,16 @@ def as_bool(value: str | bool) -> bool:
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if admin_required(request):
-        return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse("/projects", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
 
 @app.post("/login", response_class=HTMLResponse)
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     if username == settings.admin_username and password == settings.admin_password:
+        request.session.clear()
         request.session["admin_authenticated"] = True
-        return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse("/projects", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(
         "login.html",
         {"request": request, "error": "Неверный логин или пароль"},
@@ -231,6 +246,7 @@ async def admin_page(
         if selected_campaign
         else "",
         "stop_words": selected_campaign.stop_words if selected_campaign else "",
+        "plus_words": selected_campaign.plus_words if selected_campaign else "",
         "min_comment_length": selected_campaign.min_comment_length
         if selected_campaign
         else 1,
@@ -345,6 +361,7 @@ async def save_campaign(
     promo_message: str = Form(...),
     enabled: str | None = Form(None),
     stop_words: str = Form(""),
+    plus_words: str | None = Form(None, max_length=10000),
     min_comment_length: int = Form(1),
     one_promo_per_user: str | None = Form(None),
     delivery_mode: str = Form("direct"),
@@ -392,6 +409,8 @@ async def save_campaign(
         campaign = (
             session.get(Campaign, int(campaign_id)) if campaign_id.isdigit() else None
         )
+        if campaign_id and campaign is None:
+            raise HTTPException(404, "Кампания не найдена в этом проекте")
         duplicate = session.query(Campaign).filter_by(post_id=post_id).first()
         if duplicate and (not campaign or duplicate.id != campaign.id):
             return RedirectResponse(
@@ -411,6 +430,8 @@ async def save_campaign(
         campaign.shop_url = shop_url.strip()
         campaign.promo_message = promo_message
         campaign.stop_words = stop_words.strip()
+        if plus_words is not None:
+            campaign.plus_words = plus_words.strip()
         campaign.min_comment_length = max(0, min_comment_length)
         campaign.one_promo_per_user = bool(one_promo_per_user)
         campaign.delivery_mode = delivery_mode
@@ -445,7 +466,7 @@ async def save_campaign(
                     "/admin?section=campaigns&attachment_error=size",
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
-            path = ATTACHMENT_DIR / f"campaign_{uuid4().hex}"
+            path = projects.data_directory(ATTACHMENT_DIR) / f"campaign_{uuid4().hex}"
             path.write_bytes(data)
             campaign.attachment_path = str(path)
             campaign.attachment_name = attachment.filename
@@ -563,14 +584,42 @@ async def test_send(request: Request):
 
 @app.post("/vk/callback", response_class=PlainTextResponse)
 async def vk_callback(request: Request) -> str:
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid callback")
 
-    if payload.get("secret") != settings.vk_callback_secret:
+    secret = payload.get("secret")
+    if (
+        not isinstance(secret, str)
+        or not settings.vk_callback_secret
+        or not secrets.compare_digest(
+            secret.encode("utf-8"), settings.vk_callback_secret.encode("utf-8")
+        )
+    ):
         logger.warning("Rejected callback with invalid secret")
         return "invalid secret"
+    if (
+        type(payload.get("group_id")) is not int
+        or payload["group_id"] != settings.vk_group_id
+    ):
+        raise HTTPException(403, "Group does not match this callback")
 
     if payload.get("type") == "confirmation":
         return settings.vk_confirmation_code
+    project = projects.current_project.get()
+    if (
+        project is not None
+        and not project.enabled
+        and payload.get("type") not in {"message_allow", "message_deny"}
+    ):
+        # Consent revocation is still honored during pause, without any replies.
+        if payload.get("type") == "message_new":
+            await handle_message(payload, preferences_only=True)
+        # Other events are deliberately acknowledged/discarded, not queued.
+        return "ok"
     if payload.get("type") == "message_new":
         await handle_message(payload)
         return "ok"
@@ -599,9 +648,9 @@ async def vk_callback(request: Request) -> str:
     async with user_lock(user_id), CALLBACK_SLOTS:
         with SessionLocal() as guard:
             if guard.bind.dialect.name == "postgresql":
-                guard.execute(
-                    sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": user_id}
-                )
+                from .dialog import lock_conversation
+
+                lock_conversation(guard, user_id)
             return await process_comment(comment)
 
 
@@ -667,6 +716,12 @@ async def process_comment(comment: Comment) -> str:
         ]
         if any(word in comment_text.casefold() for word in stop_words):
             update_status(event_key, "stop_word")
+            return "ok"
+
+        from .comments import matches_plus_words
+
+        if not matches_plus_words(comment_text, campaign.plus_words):
+            update_status(event_key, "plus_word_missing")
             return "ok"
 
         one_promo_per_user = campaign.one_promo_per_user

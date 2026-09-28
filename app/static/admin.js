@@ -1,5 +1,14 @@
 /* Shared, dependency-free admin UI. */
 window.Admin = {
+  get projectPrefix() {
+    return document.body.dataset.projectPrefix || "";
+  },
+  get projectId() {
+    return document.body.dataset.projectId || "";
+  },
+  storageKey(key) {
+    return `vk-admin:project:${encodeURIComponent(Admin.projectId || "global")}:${key}`;
+  },
   escape(value) {
     return String(value ?? "").replace(
       /[&<>"']/g,
@@ -15,11 +24,11 @@ window.Admin = {
   },
   async api(path, method = "GET", body) {
     const headers = {
-      "X-CSRF-Token": document.querySelector("meta[name=csrf-token]").content,
+      "X-CSRF-Token": document.querySelector("meta[name=csrf-token]")?.content || "",
     };
     if (body !== undefined && !(body instanceof FormData))
       headers["Content-Type"] = "application/json";
-    const response = await fetch("/admin/api" + path, {
+    const response = await fetch(Admin.projectPrefix + "/admin/api" + path, {
       method,
       headers,
       body:
@@ -58,8 +67,46 @@ window.Admin = {
   },
 };
 const query = new URLSearchParams(location.search);
+const projectSelect = document.getElementById("project-select");
+if (projectSelect) {
+  const current = projectSelect.value;
+  projectSelect.addEventListener("change", () => {
+    const destination = projectSelect.value;
+    // Keep the current name if an unsaved-changes prompt cancels navigation.
+    projectSelect.value = current;
+    if (destination !== current) location.assign(destination);
+  });
+}
+function revealProjectSettings() {
+  const id = location.hash.slice(1) || (query.has("project_id") ? `project-${query.get("project_id")}` : "");
+  const card = document.getElementById(id);
+  if (!card?.classList.contains("project-card")) return;
+  const details = card.querySelector(".project-settings");
+  if (details) details.open = true;
+  card.scrollIntoView({ block: "start" });
+}
+revealProjectSettings();
+window.addEventListener("hashchange", revealProjectSettings);
+document.querySelectorAll("[data-copy-target]").forEach((button) => {
+  button.hidden = false;
+  button.addEventListener("click", async () => {
+    const input = document.getElementById(button.dataset.copyTarget);
+    if (!input) return;
+    try {
+      await navigator.clipboard.writeText(input.value);
+      Admin.toast("Адрес Callback API скопирован.");
+    } catch {
+      input.focus();
+      input.select();
+      Admin.toast("Адрес выделен. Скопируйте его вручную.");
+    }
+  });
+});
 const notices = {
   saved: "Настройки сохранены.",
+  project_created: "Проект создан на паузе. Настройте подключение перед включением.",
+  project_saved: "Настройки проекта сохранены.",
+  project_checked: "Подключение проверено: токен соответствует сообществу.",
   campaign_saved: "Кампания сохранена.",
   campaign_deleted: "Кампания удалена.",
   campaign_toggled: "Статус кампании изменён.",
@@ -97,12 +144,18 @@ document.querySelectorAll("form[data-confirm]").forEach((form) =>
   }),
 );
 let formDirty = false;
+const dirtyForms = new Set();
 document.querySelectorAll("form[data-unsaved]").forEach((form) => {
-  form.addEventListener("input", () => (formDirty = true));
-  form.addEventListener("submit", () => (formDirty = false));
+  form.addEventListener("input", () => dirtyForms.add(form));
+  form.addEventListener("submit", (event) => {
+    if (!event.defaultPrevented) {
+      dirtyForms.delete(form);
+      formDirty = false;
+    }
+  });
 });
 window.addEventListener("beforeunload", (e) => {
-  if (formDirty) {
+  if (formDirty || dirtyForms.size) {
     e.preventDefault();
     e.returnValue = "";
   }
@@ -113,6 +166,7 @@ const statusNames = {
   received: "Получено",
   too_short: "Короткий комментарий",
   stop_word: "Стоп-слово",
+  plus_word_missing: "Нет плюс-слова",
   already_sent: "Уже выдан",
   not_member: "Нет подписки",
   campaign_disabled: "Кампания выключена",
@@ -124,6 +178,8 @@ const statusNames = {
   waiting_permission: "Нужно разрешение на сообщения",
   invite_duplicate: "Приглашение уже создано",
   invite_unsupported: "Нельзя пригласить под видео",
+  video_invited_dm: "Приглашение отправлено в личку",
+  video_waiting_chat: "Видео: нужен переход в чат",
   gift_unavailable: "Акция недоступна",
   gift_failed: "Ошибка выдачи в чате",
 };
@@ -197,7 +253,7 @@ async function loadClients() {
                 )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
-      : '<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="/admin?section=scenarios">Открыть сценарии</a></div>';
+      : `<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="${e(Admin.projectPrefix)}/admin?section=scenarios">Открыть сценарии</a></div>`;
     list.querySelectorAll("[data-resume]").forEach(
       (b) =>
         (b.onclick = async () => {

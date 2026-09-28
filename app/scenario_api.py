@@ -179,7 +179,9 @@ async def upload_media(file: UploadFile = File(...)):
     if not data or len(data) > 50 * 1024 * 1024:
         raise HTTPException(422, "Файл должен быть непустым и не больше 50 МБ")
     asset_id = secrets.token_hex(16)
-    path = Path("data") / f"flow_{asset_id}"
+    from .projects import data_directory
+
+    path = data_directory(Path("data")) / f"flow_{asset_id}"
     path.write_bytes(data)
     with SessionLocal() as session:
         asset = MediaAsset(

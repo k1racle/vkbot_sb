@@ -36,7 +36,10 @@ CALLBACK_SLOTS = asyncio.Semaphore(4)
 
 
 def user_lock(user_id):
-    return _locks.setdefault(user_id, asyncio.Lock())
+    from .projects import current_project
+
+    project = current_project.get()
+    return _locks.setdefault((project.id if project else 0, user_id), asyncio.Lock())
 
 
 def truth(value):
@@ -62,9 +65,18 @@ def numeric_id(value):
 
 def lock_conversation(session, user_id):
     if session.bind.dialect.name == "postgresql":
-        session.execute(
-            sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": user_id}
+        from .projects import current_project
+
+        project = current_project.get()
+        # PostgreSQL advisory locks are database-wide, not schema-scoped.
+        key = int.from_bytes(
+            hashlib.sha256(
+                f"project:{project.id if project else 0}:user:{user_id}".encode()
+            ).digest()[:8],
+            "big",
+            signed=True,
         )
+        session.execute(sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 class LivePort:
@@ -364,7 +376,7 @@ async def assign_operator(payload, message, operator, claim=None):
             session.commit()
 
 
-async def handle_message(payload):
+async def handle_message(payload, *, preferences_only=False):
     obj = payload.get("object") or {}
     message = obj.get("message", obj)
     user_id = int(message.get("from_id", 0))
@@ -382,7 +394,6 @@ async def handle_message(payload):
     )
     if not event_id:
         return
-    record_incoming(user_id)
     incoming = incoming_payload(message)
     word = str(message.get("text", "")).strip().casefold()
     unsubscribe = incoming.get("action") == "broadcast_unsubscribe" or (
@@ -390,6 +401,9 @@ async def handle_message(payload):
         and word in {"стоп", "stop", "/stop", "отписаться", "отписаться от рассылок"}
     )
     subscribe = not incoming and word in {"подписаться на рассылку", "/subscribe"}
+    if preferences_only and not unsubscribe:
+        return
+    record_incoming(user_id)
     if unsubscribe or subscribe:
         key = f"newsletter:{payload.get('group_id')}:{user_id}:{event_id}"[:160]
         async with user_lock(user_id), CALLBACK_SLOTS:
@@ -409,6 +423,8 @@ async def handle_message(payload):
                     )
                 )
                 session.commit()  # Failure to acknowledge must never undo an opt-out.
+            if preferences_only:
+                return  # A paused project records STOP without sending an acknowledgment.
             try:
                 port = LivePort(None, user_id, key, {})
                 await port.emit(
