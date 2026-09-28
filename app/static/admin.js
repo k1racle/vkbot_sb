@@ -129,6 +129,7 @@ const failures = {
   type: "Этот тип файла не поддерживается.",
   empty: "Выберите непустой файл.",
   invitation: "Добавьте от 1 до 10 приглашений, до 2000 символов каждое. В каждом тексте нужна переменная {chat_url} для ссылки на чат.",
+  promo: "Для режима с подарком заполните промокод, ссылку на магазин и текст сообщения. Для обычного диалога выберите «Пригласить в чат — без подарка».",
 };
 const notice = document.getElementById("page-notice");
 for (const [key, value] of query) {
@@ -186,6 +187,12 @@ const statusNames = {
   video_waiting_chat: "Видео: нужен переход в чат",
   gift_unavailable: "Акция недоступна",
   gift_failed: "Ошибка выдачи в чате",
+  gift_cancelled: "Подарок отменён: кампания без выдачи",
+  chat_inviting: "Отправка приглашения в диалог",
+  chat_invited: "Приглашение в диалог опубликовано",
+  chat_invited_dm: "Приглашение в диалог отправлено в личку",
+  chat_invite_duplicate: "Уже приглашён в этой кампании",
+  chat_invite_unavailable: "Нет доступа для приглашения",
 };
 document.querySelectorAll("[data-status]").forEach((el) => {
   const original = el.textContent;
@@ -194,7 +201,7 @@ document.querySelectorAll("[data-status]").forEach((el) => {
     statusNames[el.dataset.status] || el.dataset.status,
   );
   if (el.dataset.status === "sent") el.classList.add("live");
-  if (["failed", "gift_failed", "invite_unsupported"].includes(el.dataset.status)) el.classList.add("warning");
+  if (["failed", "gift_failed", "invite_unsupported", "chat_invite_unavailable"].includes(el.dataset.status)) el.classList.add("warning");
 });
 // Each invitation is a separate ordinary form field; the server also validates
 // the count/length/placeholder. Keep unsaved changes when switching delivery mode.
@@ -203,10 +210,35 @@ if (deliveryMode) {
   const section = document.getElementById("invitation-settings");
   const variants = document.getElementById("invitation-variants");
   const add = document.getElementById("add-invitation");
+  const defaults = JSON.parse(document.getElementById("invitation-defaults").textContent);
+  const template = variants.firstElementChild.cloneNode(true);
+  const drafts = {};
+  let variantMode = deliveryMode.value === "chat_only" ? "chat" : "gift";
   const refresh = () => {
+    const chatOnly = deliveryMode.value === "chat_only";
+    const nextMode = chatOnly ? "chat" : "gift";
+    if (nextMode !== variantMode) {
+      // Keep unsaved invitation texts for both modes during this edit.
+      drafts[variantMode] = [...variants.querySelectorAll("textarea")].map(area => area.value);
+      variants.replaceChildren(...(drafts[nextMode] || defaults[nextMode]).map(value => {
+        const card = template.cloneNode(true);
+        card.querySelector("textarea").value = value;
+        return card;
+      }));
+      variantMode = nextMode;
+    }
     const cards = [...variants.children];
-    const enabled = deliveryMode.value === "chat_invite";
+    const enabled = deliveryMode.value !== "direct";
     section.hidden = !enabled;
+    document.querySelectorAll("[data-gift-invitation]").forEach(el => el.hidden = chatOnly);
+    document.querySelectorAll("[data-chat-invitation]").forEach(el => el.hidden = !chatOnly);
+    const promo = document.getElementById("campaign-promo-fields");
+    promo.hidden = promo.disabled = chatOnly;
+    document.getElementById("campaign-repeat-label").textContent = chatOnly
+      ? "Одно приглашение клиенту в этой кампании" : "Один промокод клиенту в этой кампании";
+    document.getElementById("campaign-membership-hint").textContent = chatOnly
+      ? "Подписка не обязательна. При необходимости проверьте её в сценарии."
+      : "Подписка на сообщество проверяется перед выдачей подарка.";
     cards.forEach((card, i) => {
       card.querySelector("[data-variant-title]").textContent = `Вариант ${i + 1}`;
       card.querySelector("[data-variant-label]").textContent = `Текст приглашения ${i + 1}`;

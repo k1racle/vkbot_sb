@@ -144,7 +144,12 @@ class LivePort:
 
     async def promo(self, campaign_id, variables):
         campaign = self.session.get(Campaign, campaign_id)
-        if not campaign or campaign.is_deleted or not campaign.enabled:
+        if (
+            not campaign
+            or campaign.is_deleted
+            or not campaign.enabled
+            or campaign.delivery_mode == "chat_only"
+        ):
             await self.emit("Эта акция сейчас недоступна.")
             return
         if not await vk_api.is_group_member(self.user_id):
@@ -462,6 +467,9 @@ async def handle_message(payload, *, preferences_only=False):
             # It does not reset scenario progress or a manager's ownership.
             if await handle_gift_request(session, event, message, incoming):
                 return
+            start_button = incoming == {"command": "start"}
+            if start_button:
+                incoming = {}
             values = read_settings(session)
             if not truth(values.get("chat_enabled") or get_settings().chat_enabled):
                 return
@@ -483,12 +491,16 @@ async def handle_message(payload, *, preferences_only=False):
                 incoming_message_id=numeric_id(message.get("conversation_message_id")),
             )
             try:
-                restart = not incoming and event.text.strip().casefold() in {
-                    "меню",
-                    "начать",
-                    "старт",
-                    "/start",
-                }
+                restart = start_button or (
+                    not incoming
+                    and event.text.strip().casefold()
+                    in {
+                        "меню",
+                        "начать",
+                        "старт",
+                        "/start",
+                    }
+                )
                 if conversation.handoff and not restart:
                     event.status = "done"
                     session.commit()

@@ -40,6 +40,51 @@ def campaign(project, **fields):
         return row.id
 
 
+def test_chat_only_two_groups_use_own_keys_dialogs_and_dedup(two_projects):
+    from test_projects import scenario
+
+    env, first, second = two_projects
+    for project in (first, second):
+        response = env.client.post(
+            prefix(project) + "/campaigns",
+            data={
+                "title": "Диалог",
+                "delivery_mode": "chat_only",
+                "enabled": "1",
+                "one_promo_per_user": "1",
+                "public_reply_variants": [project.name + " {chat_url}"],
+            },
+        )
+        assert "campaign_saved=1" in str(response.url)
+        scenario(env.client, project, "Диалог " + project.name)
+    env.network.calls.clear()
+    for project in (first, second):
+        callback(env.client, project, comment(project))
+        callback(env.client, project, comment(project, number=2))
+        callback(env.client, project, message(project, text="Меню"))
+        with session_for(project) as session:
+            assert session.query(db.PendingGift).count() == 0
+            assert session.query(db.PromoDelivery).count() == 0
+            assert (
+                session.query(db.ProcessedComment)
+                .filter_by(status="chat_invited")
+                .count()
+                == 1
+            )
+    replies = [c for c in env.network.calls if c["method"] == "wall.createComment"]
+    assert len(replies) == 2
+    for call, project in zip(replies, (first, second)):
+        assert call["params"]["access_token"] == project.token
+        assert str(call["params"]["owner_id"]) == str(-project.group_id)
+        assert project.name in call["params"]["message"]
+        assert f"https://vk.me/club{project.group_id}" in call["params"]["message"]
+    sends = [c for c in env.network.calls if c["method"] == "messages.send"]
+    assert len(sends) == 2
+    for call, project in zip(sends, (first, second)):
+        assert call["params"]["access_token"] == project.token
+        assert call["params"]["message"] == "Диалог " + project.name
+
+
 def video(project, number=1, content="хочу подарок"):
     payload = comment(project, number)
     payload["type"] = "video_comment_new"
@@ -83,7 +128,7 @@ def test_whole_plus_words_and_phrases(words, body, matched):
 
 
 @pytest.mark.parametrize("kind", ["wall", "video"])
-@pytest.mark.parametrize("mode", ["direct", "chat_invite"])
+@pytest.mark.parametrize("mode", ["direct", "chat_invite", "chat_only"])
 def test_plus_filter_before_any_vk_and_stop_wins(two_projects, kind, mode):
     env, first, _ = two_projects
     campaign(
@@ -106,7 +151,12 @@ def test_plus_filter_before_any_vk_and_stop_wins(two_projects, kind, mode):
     payload = build(first, 3)
     payload["object"]["text"] = "ПОДАРОК!"
     callback(env.client, first, payload)
-    assert status(first) in {"sent", "waiting_chat", "video_invited_dm"}
+    if mode == "chat_only":
+        assert status(first) == (
+            "chat_invited" if kind == "wall" else "chat_invited_dm"
+        )
+    else:
+        assert status(first) in {"sent", "waiting_chat", "video_invited_dm"}
 
 
 def test_plus_admin_edit_clear_legacy_form_and_projects(two_projects):

@@ -49,6 +49,103 @@ DEFAULT_INVITATIONS = [
         "В чате нажмите «Начать» или отправьте слово «Подарок»."
     ),
 ]
+DEFAULT_CHAT_INVITATIONS = [
+    "Спасибо за комментарий! Продолжим общение в чате: {chat_url}\nНажмите «Начать» или напишите «Меню».",
+    "Рады вашему интересу! Поможем с выбором в сообщениях: {chat_url}\nНажмите «Начать» или отправьте «Меню».",
+    "Спасибо за активность! Задайте вопрос нашему боту: {chat_url}\nДля начала диалога нажмите «Начать» или напишите «Меню».",
+]
+
+
+def invitation_defaults(mode):
+    return DEFAULT_CHAT_INVITATIONS if mode == "chat_only" else DEFAULT_INVITATIONS
+
+
+def invitation_text(campaign, values):
+    variants = campaign.public_reply_variants or invitation_defaults(
+        campaign.delivery_mode
+    )
+    return secrets.choice(variants).replace("{chat_url}", resolve_chat_url(values))
+
+
+def chat_keyboard():
+    return {
+        "inline": True,
+        "buttons": [
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Начать диалог",
+                        "payload": json.dumps({"command": "start"}),
+                    },
+                    "color": "primary",
+                }
+            ]
+        ],
+    }
+
+
+async def invite_without_gift(session, comment, campaign):
+    """Invite only. Never create a PendingGift or count this as a promo delivery."""
+    record = (
+        session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
+    )
+    if (
+        campaign.one_promo_per_user
+        and session.query(ProcessedComment)
+        .filter(
+            ProcessedComment.user_id == comment.user_id,
+            ProcessedComment.campaign_id == campaign.id,
+            ProcessedComment.status.in_(
+                ["chat_inviting", "chat_invited", "chat_invited_dm"]
+            ),
+            ProcessedComment.id != record.id,
+        )
+        .first()
+    ):
+        record.status = "chat_invite_duplicate"
+        session.commit()
+        return
+    values = read_settings(session)
+    invitation = invitation_text(campaign, values)
+    guid = hashlib.sha256(f"chat-only:{comment.event_key}".encode()).hexdigest()[:32]
+    record.status = "chat_inviting"
+    session.commit()
+    if comment.source_type == "wall":
+        await vk_api.reply_to_wall_comment(comment, invitation, guid=guid)
+    elif vk_api.video_reply_available():
+        await vk_api.reply_to_video_comment(comment, invitation, guid=guid)
+    else:
+        from .db import Client
+
+        client = session.get(Client, comment.user_id)
+        allowed = not (
+            client and (client.unsubscribed or client.messages_allowed is False)
+        ) and await vk_api.is_messages_allowed(comment.user_id)
+        if allowed:
+            try:
+                await vk_api.send_message(
+                    comment.user_id,
+                    invitation,
+                    random_id=random_id(f"video-chat-only:{guid}"),
+                    keyboard=chat_keyboard(),
+                )
+                record.status, record.error = "chat_invited_dm", None
+                session.commit()
+                return
+            except vk_api.VkApiError as error:
+                if error.code not in {901, 902}:
+                    raise
+        record.status = "chat_invite_unavailable"
+        record.error = (
+            "Приглашение не отправлено: нет токена для ответа под видео и разрешения "
+            "на личные сообщения. Подключите токен в «Проектах» или разместите ссылку "
+            "на чат в описании видео: " + resolve_chat_url(values)
+        )
+        session.commit()
+        return
+    record.status, record.error = "chat_invited", None
+    session.commit()
 
 
 def validate_chat_url(value: str) -> str:
@@ -269,7 +366,12 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
                 is not None
             )
             keyboard = gift_keyboard("Следующий подарок") if more else None
-            if not campaign or campaign.is_deleted or not campaign.enabled:
+            if (
+                not campaign
+                or campaign.is_deleted
+                or not campaign.enabled
+                or campaign.delivery_mode == "chat_only"
+            ):
                 gift.status, gift.active_key = "cancelled", None
                 gift.awaiting_subscription = False
                 if record:

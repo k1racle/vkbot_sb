@@ -28,6 +28,7 @@ from .config import SettingsProxy
 from .crm_api import router as crm_router
 from .db import (
     Campaign,
+    PendingGift,
     ProcessedComment,
     SessionLocal,
     already_processed,
@@ -44,8 +45,13 @@ from .dialog import (
 )
 from .flows import render
 from .gifts import (
+    DEFAULT_CHAT_INVITATIONS,
     DEFAULT_INVITATIONS,
+    chat_keyboard,
+    invitation_defaults,
+    invitation_text,
     invite_to_chat,
+    invite_without_gift,
     resolve_chat_url,
     validate_chat_url,
 )
@@ -251,7 +257,9 @@ async def admin_page(
         "public_reply_variants": (
             selected_campaign.public_reply_variants if selected_campaign else None
         )
-        or DEFAULT_INVITATIONS,
+        or invitation_defaults(
+            selected_campaign.delivery_mode if selected_campaign else "direct"
+        ),
         "attachment_name": selected_campaign.attachment_name
         if selected_campaign
         else "",
@@ -272,6 +280,10 @@ async def admin_page(
             "csrf": request.session["csrf"],
             "form": form,
             "campaign_form": campaign_form,
+            "invitation_defaults": {
+                "gift": DEFAULT_INVITATIONS,
+                "chat": DEFAULT_CHAT_INVITATIONS,
+            },
             "stats": {
                 "total": total,
                 "sent": sent,
@@ -366,9 +378,9 @@ async def save_campaign(
     request: Request,
     post_id: str = Form(""),
     title: str = Form(""),
-    promo_code: str = Form(...),
-    shop_url: str = Form(...),
-    promo_message: str = Form(...),
+    promo_code: str | None = Form(None),
+    shop_url: str | None = Form(None),
+    promo_message: str | None = Form(None),
     enabled: str | None = Form(None),
     stop_words: str = Form(""),
     plus_words: str | None = Form(None, max_length=10000),
@@ -385,12 +397,12 @@ async def save_campaign(
     variants = (
         [value.strip() for value in public_reply_variants if value.strip()]
         if public_reply_variants is not None
-        else list(DEFAULT_INVITATIONS)
+        else list(invitation_defaults(delivery_mode))
     )
     if (
-        delivery_mode not in {"direct", "chat_invite"}
+        delivery_mode not in {"direct", "chat_invite", "chat_only"}
         or (
-            delivery_mode == "chat_invite"
+            delivery_mode in {"chat_invite", "chat_only"}
             and (
                 not 1 <= len(variants) <= 10
                 or any(
@@ -403,6 +415,12 @@ async def save_campaign(
     ):
         return RedirectResponse(
             "/admin?section=campaigns&campaign_error=invitation", status_code=303
+        )
+    if delivery_mode != "chat_only" and not all(
+        value and value.strip() for value in (promo_code, shop_url, promo_message)
+    ):
+        return RedirectResponse(
+            "/admin?section=campaigns&campaign_error=promo", status_code=303
         )
     entered_post_id = post_id.strip()
     if entered_post_id and (
@@ -436,9 +454,11 @@ async def save_campaign(
         campaign.title = title.strip() or (
             f"Пост {post_id}" if post_id else "Все публикации"
         )
-        campaign.promo_code = promo_code.strip()
-        campaign.shop_url = shop_url.strip()
-        campaign.promo_message = promo_message
+        # Switching to chat-only preserves old gift settings without using them.
+        if delivery_mode != "chat_only":
+            campaign.promo_code = promo_code.strip()
+            campaign.shop_url = shop_url.strip()
+            campaign.promo_message = promo_message
         campaign.stop_words = stop_words.strip()
         if plus_words is not None:
             campaign.plus_words = plus_words.strip()
@@ -447,6 +467,26 @@ async def save_campaign(
         campaign.delivery_mode = delivery_mode
         campaign.public_reply_variants = variants
         campaign.enabled = bool(enabled)
+        if delivery_mode == "chat_only":
+            # Old unclaimed gifts must not leak into the new no-gift workflow.
+            pending_keys = session.query(PendingGift.event_key).filter_by(
+                campaign_id=campaign.id, status="pending"
+            )
+            session.query(ProcessedComment).filter(
+                ProcessedComment.event_key.in_(pending_keys)
+            ).update(
+                {"status": "gift_cancelled", "error": None}, synchronize_session=False
+            )
+            session.query(PendingGift).filter_by(
+                campaign_id=campaign.id, status="pending"
+            ).update(
+                {
+                    "status": "cancelled",
+                    "active_key": None,
+                    "awaiting_subscription": False,
+                }
+            )
+            attachment, remove_attachment = None, None
         if remove_attachment:
             campaign.attachment_path = campaign.attachment_name = (
                 campaign.attachment_type
@@ -558,6 +598,19 @@ async def test_send(request: Request):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
+        if campaign.delivery_mode == "chat_only":
+            # Test the invitation in a permitted DM; never publish a test comment
+            # or start a live scenario on behalf of the recipient.
+            await send_message(
+                user_id,
+                invitation_text(campaign, values),
+                random_id=secrets.randbelow(2147483646) + 1,
+                keyboard=chat_keyboard(),
+            )
+            return RedirectResponse(
+                f"/admin?section=campaigns&test_sent=1&campaign_id={campaign.id}",
+                status_code=303,
+            )
         user_name = await get_user_name(user_id)
         message = render(
             campaign.promo_message,
@@ -740,6 +793,13 @@ async def process_comment(comment: Comment) -> str:
 
         if not matches_plus_words(comment_text, campaign.plus_words):
             update_status(event_key, "plus_word_missing")
+            return "ok"
+
+        if campaign.delivery_mode == "chat_only":
+            # No membership gate, pending gift or automatic promo for this mode.
+            # Subscription requirements can be set explicitly in the chat scenario.
+            with SessionLocal() as session:
+                await invite_without_gift(session, comment, campaign)
             return "ok"
 
         one_promo_per_user = campaign.one_promo_per_user

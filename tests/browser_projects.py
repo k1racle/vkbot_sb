@@ -142,6 +142,9 @@ def main():
             page.goto("http://127.0.0.1:8766/p/1/admin?section=settings")
             assert page.locator('[name="chat_url"]').input_value() == ""
             other.screenshot(path=str(output / "project-settings.png"), full_page=True)
+            from tests.browser_chat_only import exercise_chat_only
+
+            exercise_chat_only(page, output)
             # Save campaign keywords in the real UI, then download an XLSX.
             page.goto(
                 "http://127.0.0.1:8766/p/1/admin?section=campaigns&new_campaign=true"
@@ -291,7 +294,7 @@ def main():
             assert not errors, errors
             browser.close()
         print(
-            "PASS: project names, new scenario modules, isolation, keywords, XLSX, masked tokens, trash/restore, rename, logo/favicon, Lucide icons, desktop/mobile, no JS errors"
+            "PASS: chat-only campaigns, project names, new scenario modules, isolation, keywords, XLSX, masked tokens, trash/restore, rename, logo/favicon, Lucide icons, desktop/mobile, no JS errors"
         )
     finally:
         server.should_exit = True
