@@ -25,6 +25,7 @@ KINDS = {
     "operator",
     "end",
     "contact",
+    "phone_condition",
     "set_variable",
     "variable_condition",
     "random",
@@ -74,6 +75,7 @@ class Node(BaseModel):
         "operator",
         "end",
         "contact",
+        "phone_condition",
         "set_variable",
         "variable_condition",
         "random",
@@ -101,6 +103,7 @@ class Node(BaseModel):
     campaign_id: int | None = Field(default=None, gt=0)
     media_id: str = Field(default="", max_length=32)
     contact_type: Literal["phone", "email"] = "phone"
+    phone_check_mode: Literal["provided", "any"] = "provided"
     allow_skip: bool = True
     error_text: str = Field(default="", max_length=500)
     value: str = Field(default="", max_length=1000)
@@ -149,7 +152,13 @@ def outputs(node):
         return [("Ответил", node["yes"]), ("Время вышло", node["no"])]
     if kind == "call_subflow":
         return [("Подцепочка", node["subflow_id"]), ("После возврата", node["next"])]
-    if kind in {"condition", "variable_condition", "schedule", "tag_condition"}:
+    if kind in {
+        "condition",
+        "variable_condition",
+        "schedule",
+        "tag_condition",
+        "phone_condition",
+    }:
         return [("Да", node["yes"]), ("Нет", node["no"])]
     if kind in {"end", "operator", "return"}:
         return []
@@ -583,6 +592,10 @@ async def advance(
             await port.change_tag(normalize_tag(current["tag"]), current["tag_action"])
         elif kind == "tag_condition":
             result = await port.has_tag(normalize_tag(current["tag"]))
+            current = nodes[current["yes"] if result else current["no"]]
+            continue
+        elif kind == "phone_condition":
+            result = await port.has_phone(current.get("phone_check_mode", "provided"))
             current = nodes[current["yes"] if result else current["no"]]
             continue
         elif kind == "schedule":

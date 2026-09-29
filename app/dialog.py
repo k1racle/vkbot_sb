@@ -157,6 +157,16 @@ class LivePort:
             if client:
                 client.phone, client.phone_source = value, "dialog"
 
+    async def has_phone(self, mode):
+        from .db import Client
+
+        client = self.session.get(Client, self.user_id)
+        return bool(
+            client
+            and clients.clean_phone(client.phone)
+            and (mode == "any" or client.phone_source == "dialog")
+        )
+
     async def emit(
         self,
         message,

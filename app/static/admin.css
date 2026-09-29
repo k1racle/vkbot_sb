@@ -1060,6 +1060,13 @@ th {
   box-shadow: 0 25px 80px #10291e33;
   color: var(--ink);
 }
+.preview-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.preview-dialog > :not(.preview-messages) {
+  flex-shrink: 0;
+}
 .preview-dialog::backdrop {
   background: #16291d66;
   backdrop-filter: blur(3px);
@@ -1085,6 +1092,7 @@ th {
 }
 .preview-messages {
   height: min(420px, 48vh);
+  min-height: 90px;
   overflow: auto;
   background: #f3f6ef;
   padding: 20px;
@@ -1725,7 +1733,7 @@ body.flow-fullscreen > .skip-link { visibility: hidden; }
 #flow-app.is-fullscreen .inspector { min-height: 0; max-height: none; }
 .schedule-days { border: 1px solid var(--line); border-radius: 8px; margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px; }
 .inspector .schedule-days label { margin: 0; }
-.preview-controls { padding: 0 18px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.preview-controls { padding: 0 18px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; max-height: 36dvh; overflow: auto; }
 .preview-controls label { font-size: 11px; margin: 0; }
 .preview-controls input { padding: 6px; min-width: 0; }
 .preview-controls p { grid-column: 1 / -1; margin: 0; }

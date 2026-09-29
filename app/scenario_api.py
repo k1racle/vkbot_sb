@@ -2,6 +2,7 @@ import copy
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -59,6 +60,7 @@ class PreviewInput(BaseModel):
     resume_wait: bool = False
     simulated_at: AwareDatetime | None = None
     tags: list[str] = Field(default_factory=list, max_length=100)
+    phone_status: Literal["missing", "provided", "profile"] = "missing"
 
 
 def serialize(item):
@@ -263,6 +265,7 @@ async def preview(body: PreviewInput):
         )
         state.setdefault("version", 0)
         state.setdefault("variables", {})
+        state.setdefault("phone_status", body.phone_status)
         try:
             clock = body.simulated_at or (
                 datetime.fromisoformat(state["clock"])
@@ -305,7 +308,12 @@ async def preview(body: PreviewInput):
                 return "answer"
 
             async def save_contact(self, kind, value):
-                pass  # Simulator only: do not change the client directory.
+                if kind == "phone":
+                    state["phone_status"] = "provided"  # No customer/database writes.
+
+            async def has_phone(self, mode):
+                status = state.get("phone_status", "missing")
+                return status == "provided" or (mode == "any" and status == "profile")
 
             def nonce(self, step):
                 return secrets.token_hex(8)

@@ -10,6 +10,7 @@
     operator: ["Менеджер", "user-round"],
     end: ["Завершение", "circle-stop"],
     contact: ["Телефон / email", "user-round"],
+    phone_condition: ["Телефон указан?", "check"],
     set_variable: ["Записать переменную", "pencil"],
     variable_condition: ["Проверить ответ", "git-branch"],
     random: ["Случайный ответ", "messages-square"],
@@ -22,7 +23,7 @@
     call_subflow: ["Вызвать подцепочку", "workflow"],
     return: ["Возврат", "arrow-left"],
   };
-  const blockDefaults = { tag: '', tag_action: 'add', timezone: 'Europe/Moscow', weekdays: [0, 1, 2, 3, 4], time_from: '09:00', time_to: '18:00', date_from: '', date_to: '', subflow_id: '', pass_variables: [], return_variables: [] };
+  const blockDefaults = { phone_check_mode: 'provided', tag: '', tag_action: 'add', timezone: 'Europe/Moscow', weekdays: [0, 1, 2, 3, 4], time_from: '09:00', time_to: '18:00', date_from: '', date_to: '', subflow_id: '', pass_variables: [], return_variables: [] };
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   let flows = [],
     campaigns = [],
@@ -89,7 +90,7 @@
   function exits(n) {
     if (n.type === 'wait_reply') return [{key: 'yes', label: 'Ответил', target: n.yes}, {key: 'no', label: 'Время вышло', target: n.no}];
     if (n.type === 'call_subflow') return [{key: 'subflow_id', label: 'Подцепочка', target: n.subflow_id}, {key: 'next', label: 'После возврата', target: n.next}];
-    if (["condition", "variable_condition", "schedule", "tag_condition"].includes(n.type))
+    if (["condition", "variable_condition", "schedule", "tag_condition", "phone_condition"].includes(n.type))
       return [
         { key: "yes", label: "Да", target: n.yes },
         { key: "no", label: "Нет", target: n.no },
@@ -139,6 +140,7 @@
     if (n.type === 'return') return 'Вернуться туда, откуда вызвана подцепочка';
     if (n.type === 'wait') return `Пауза: ${n.delay_value} ${waitUnits[n.delay_unit]}\nЗатем — следующий блок`;
     if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}`;
+    if (n.type === 'phone_condition') return n.phone_check_mode === 'any' ? 'Есть сохранённый телефон, в том числе из VK?' : 'Клиент уже оставил телефон боту?';
     if (n.type === 'set_variable') return `{${n.variable}} = ${n.value || '(пусто)'}`;
     if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
     if (n.type === 'random') return `${n.variants.length} вариантов · один ответ за шаг\n${n.variants[0] || 'Добавьте тексты справа'}`;
@@ -304,6 +306,9 @@
     if (n.type === 'contact') {
       html += `<label>Какой контакт запросить<select data-field="contact_type"><option value="phone" ${n.contact_type === 'phone' ? 'selected' : ''}>Телефон</option><option value="email" ${n.contact_type === 'email' ? 'selected' : ''}>Email</option></select></label><label class="check"><input type="checkbox" data-field="allow_skip" ${n.allow_skip ? 'checked' : ''}> Разрешить ответ «Пропустить»</label><label>Подсказка при неверном формате<textarea data-field="error_text" maxlength="500" placeholder="Пусто — стандартная подсказка бота">${e(n.error_text)}</textarea></label><p class="hint">Бот ждёт текстовый ответ и проверяет формат, но не принадлежность контакта. Телефон сразу попадает в карточку клиента; оба контакта сохраняются в ответах диалога. Это не подписка на рассылку.</p>`;
     }
+    if (n.type === 'phone_condition') {
+      html += `<label>Какой телефон учитывать<select data-field="phone_check_mode"><option value="provided" ${n.phone_check_mode === 'provided' ? 'selected' : ''}>Оставленный боту</option><option value="any" ${n.phone_check_mode === 'any' ? 'selected' : ''}>Любой сохранённый, включая VK</option></select></label><p class="hint">Проверяет карточку клиента в текущем проекте, даже после «Меню». Блок «Телефон / email» сохраняет телефон сразу. Email, произвольная переменная и текст последнего сообщения не считаются телефоном. Проверка не подтверждает принадлежность номера и не меняет согласие на рассылку.</p><p class="hint">Например: «Да» → продолжить, «Нет» → запросить телефон. Данные из VK заново не запрашиваются.</p>`;
+    }
     if (n.type === 'set_variable') {
       html += `<label>Что записать<textarea data-field="value" maxlength="1000" placeholder="Например: доставка или Запрос: {answer}">${e(n.value)}</textarea></label><p class="hint">Без сообщения клиенту. Можно подставлять {first_name}, {answer} и другие ответы. Пустое значение очищает переменную; код и формулы не исполняются.</p>`;
     }
@@ -364,7 +369,7 @@
       html +=
         '<p class="hint">Бот приостановит ответы клиенту и уведомит всех менеджеров из раздела «Общение». Первый ответивший или нажавший «Взять в работу» станет ответственным. Переписка продолжается в VK.</p>';
     if (n.type === 'wait_reply') html += targetSelect('yes', 'Если ответил вовремя', n.yes) + targetSelect('no', 'Если время вышло', n.no);
-    else if (["condition", "variable_condition", "schedule", "tag_condition"].includes(n.type))
+    else if (["condition", "variable_condition", "schedule", "tag_condition", "phone_condition"].includes(n.type))
       html +=
         targetSelect("yes", "Если да", n.yes) +
         targetSelect("no", "Если нет", n.no);
@@ -831,6 +836,8 @@
     $("preview-form").querySelector("button").disabled = true;
     buttons.inert = true;
     $("restart-preview").disabled = true;
+    const controls = document.querySelectorAll('.preview-controls input, .preview-controls select, #preview-member');
+    controls.forEach(input => { input.disabled = true; });
     try {
       const result = await Admin.api("/preview", "POST", {
         graph: graph(),
@@ -838,6 +845,7 @@
         text,
         payload,
         member: $("preview-member").checked,
+        phone_status: $('preview-phone').value,
         restart,
         resume_wait: resumeWait,
         simulated_at: $('preview-clock').value ? new Date($('preview-clock').value + 'Z').toISOString() : null,
@@ -846,6 +854,7 @@
       previewState = result.state;
       if (previewState.clock) $('preview-clock').value = new Date(previewState.clock).toISOString().slice(0, 19);
       $('preview-state').textContent = `Метки: ${(previewState.tags || []).join(', ') || 'нет'} · Вложенность: ${(previewState.stack || []).length}`;
+      $('preview-contact-state').textContent = `Телефон сейчас: ${{missing: 'не оставлен', provided: 'оставлен боту', profile: 'получен из VK'}[previewState.phone_status] || 'не оставлен'}`;
       for (const m of result.messages) {
         bubble(
           m.text,
@@ -900,6 +909,7 @@
       $("restart-preview").disabled = false;
       $("preview-form").querySelector("button").disabled = false;
       buttons.inert = false;
+      controls.forEach(input => { input.disabled = false; });
     }
   }
   async function restartPreview() {

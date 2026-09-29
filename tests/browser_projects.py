@@ -125,6 +125,9 @@ def main():
             from tests.browser_automation import exercise_automation
 
             exercise_automation(page, output)
+            from tests.browser_phone import exercise_phone
+
+            exercise_phone(page, output)
             # The same browser cookie in another tab cannot switch this tab's API.
             other = context.new_page()
             other.on("pageerror", lambda error: errors.append(str(error)))
