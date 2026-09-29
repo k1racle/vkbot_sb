@@ -134,6 +134,9 @@ def main():
             from tests.browser_scenario_triggers import exercise_scenario_triggers
 
             exercise_scenario_triggers(page, output)
+            from tests.browser_optional_endings import exercise_optional_endings
+
+            exercise_optional_endings(page, output)
             # The same browser cookie in another tab cannot switch this tab's API.
             other = context.new_page()
             other.on("pageerror", lambda error: errors.append(str(error)))

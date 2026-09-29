@@ -673,11 +673,16 @@ async def handle_message(payload, *, preferences_only=False):
                                 "Сценарий сейчас недоступен. Напишите ваш вопрос сообщением."
                             )
                         else:
-                            await port.emit(
-                                values.get("chat_greeting")
-                                or get_settings().chat_greeting,
-                                keyboard={"one_time": False, "buttons": []},
+                            greeting = values.get(
+                                "chat_greeting", get_settings().chat_greeting
                             )
+                            # An explicitly empty saved value means silence, not
+                            # a request to restore the ENV/default greeting.
+                            if greeting.strip():
+                                await port.emit(
+                                    greeting,
+                                    keyboard={"one_time": False, "buttons": []},
+                                )
                 event.status, event.error = "done", port.warning
                 session.commit()
             except Exception as error:

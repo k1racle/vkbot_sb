@@ -236,7 +236,7 @@ async def admin_page(
         "chat_enabled": as_bool(
             values.get("chat_enabled") or settings.chat_enabled or "true"
         ),
-        "chat_greeting": values.get("chat_greeting") or settings.chat_greeting,
+        "chat_greeting": values.get("chat_greeting", settings.chat_greeting),
         "operator_user_id": values.get("operator_user_id", settings.operator_user_id),
         "operator_trigger_words": values.get(
             "operator_trigger_words", settings.operator_trigger_words
@@ -360,7 +360,7 @@ async def update_chat_settings(
             session,
             {
                 "chat_enabled": "true" if chat_enabled else "false",
-                "chat_greeting": chat_greeting.strip() or settings.chat_greeting,
+                "chat_greeting": chat_greeting.strip(),
                 "operator_user_id": operator_user_id.strip(),
                 "operator_trigger_words": operator_trigger_words.strip()
                 or settings.operator_trigger_words,

@@ -132,6 +132,9 @@
       );
     return output;
   }
+  function canFinishExit(n, path) {
+    return !['start', 'subflow'].includes(n.type) && path !== 'subflow_id';
+  }
   function choose(id) {
     selected = id;
     document
@@ -179,7 +182,7 @@
           )
             .map(
               (o) =>
-                `<div class="node-output"><span>${o.link ? Admin.icon("external-link") + " " : ""}${e(o.label)}</span>${!o.link ? `<button class="node-port ${pending?.id === n.id && pending?.key === o.key ? "pending" : ""}" data-output="${e(o.key)}" aria-label="Переход ${e(o.label)}"></button>` : ""}</div>`,
+                `<div class="node-output"><span>${o.link ? Admin.icon("external-link") + " " : ""}${e(o.label)}${!o.link && !o.target && canFinishExit(n, o.key) ? ' · конец' : ''}</span>${!o.link ? `<button class="node-port ${pending?.id === n.id && pending?.key === o.key ? "pending" : ""}" data-output="${e(o.key)}" aria-label="Переход ${e(o.label)}"></button>` : ""}</div>`,
             )
             .join("")}</article>`,
       )
@@ -279,7 +282,8 @@
     $("edge-lines").innerHTML = lines.join("");
   }
   function targetSelect(path, label, value) {
-    return `<label>${e(label)}<select data-field="${path}"><option value="">Выберите блок…</option>${graph()
+    const emptyLabel = canFinishExit(node(), path) ? 'Закончить без сообщения' : 'Выберите блок…';
+    return `<label>${e(label)}<select data-field="${path}"><option value="">${emptyLabel}</option>${graph()
       .nodes.map(
         (n) =>
           `<option value="${e(n.id)}" ${value === n.id ? "selected" : ""}>${e(n.title)} · ${kinds[n.type][0]}</option>`,
@@ -410,6 +414,8 @@
         n.type === "call_subflow" ? "После возврата" : n.type === "question" ? "Любой другой ответ" : n.type === 'contact' ? 'После получения контакта или «Пропустить»' : "Следующий блок",
         n.next,
       );
+    if (!['start', 'subflow', 'operator', 'end', 'return'].includes(n.type))
+      html += '<p class="hint">Отдельный блок «Завершение» не обязателен: пустой переход заканчивает цепочку без дополнительного сообщения. Вопрос и сбор контакта сначала ждут ответ; ожидание — свой срок. Внутри подцепочки нужен «Возврат».</p>';
     if (n.type !== "start")
       html +=
         '<div class="inspector-footer button-row"><button id="duplicate-node" class="btn secondary small">Дублировать</button><button id="delete-node" class="btn danger small">Удалить блок</button></div>';

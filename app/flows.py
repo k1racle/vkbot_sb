@@ -270,6 +270,11 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
         if n["media_id"] and n["media_id"] not in media_ids:
             errors.append(f"{prefix}: прикреплённый файл не найден.")
         for label, target in outputs(n):
+            required = n["type"] in {"start", "subflow"} or (
+                n["type"] == "call_subflow" and label == "Подцепочка"
+            )
+            if not target and not required:
+                continue  # An unconnected exit finishes the main chain silently.
             if target not in by_id:
                 errors.append(f"{prefix} → {label}: выберите следующий блок.")
         for b in n["buttons"]:
@@ -585,6 +590,12 @@ async def advance(
 ):
     """Mutates a serializable state; all external effects go through port."""
     nodes = {n["id"]: n for n in graph["nodes"]}
+
+    def destination(target):
+        # Only an empty exit is a valid implicit end. A stale/nonexistent ID
+        # must still raise instead of hiding a broken published graph.
+        return nodes[target] if target else {"id": "", "type": "end", "text": ""}
+
     if state.get("handoff") and not restart:
         return
     variables = state.setdefault("variables", {})
@@ -622,18 +633,18 @@ async def advance(
         state.pop("waiting", None)
         if decision == "answer":
             variables[current["variable"]] = text[:1000]
-        current = nodes[current["yes"] if decision == "answer" else current["no"]]
+        current = destination(current["yes"] if decision == "answer" else current["no"])
     elif current["type"] == "wait":
         if not resume_wait:
             return  # Incoming text/buttons never skip or restart a timer.
         state.pop("waiting", None)
-        current = nodes[current["next"]]
+        current = destination(current["next"])
     elif current["type"] == "contact":
         if not await accept_contact(
             current, state, text, payload, port, resume_wait=resume_wait
         ):
             return
-        current = nodes[current["next"]]
+        current = destination(current["next"])
     elif payload:
         valid = (
             current["type"] == "message"
@@ -652,7 +663,7 @@ async def advance(
                 "Эта кнопка устарела. Напишите «меню», чтобы начать заново."
             )
             return
-        current = nodes[current["buttons"][index]["target"]]
+        current = destination(current["buttons"][index]["target"])
     elif current["type"] == "question":
         if not text.strip():
             await port.emit("Пожалуйста, ответьте текстом.")
@@ -662,7 +673,7 @@ async def advance(
             (r["target"] for r in current["rules"] if matches(text, r["words"])),
             current["next"],
         )
-        current = nodes[target]
+        current = destination(target)
     elif current["type"] == "message" and current["buttons"]:
         button = next(
             (
@@ -681,10 +692,11 @@ async def advance(
                 ),
             )
             return
-        current = nodes[button["target"]]
+        current = destination(button["target"])
     else:
         current = next(n for n in graph["nodes"] if n["type"] == "start")
-    for step in range(100):
+    # Up to 100 actual nodes, plus a possible implicit terminal node.
+    for step in range(101):
         state["node_id"] = current["id"]
         kind = current["type"]
         if kind == "call_subflow":
@@ -721,21 +733,21 @@ async def advance(
             }
             variables.update(exported)
             variables["last_message"] = last_message
-            current = nodes[frame["return_to"]]
+            current = destination(frame["return_to"])
             continue
         if kind == "tag":
             await port.change_tag(normalize_tag(current["tag"]), current["tag_action"])
         elif kind == "tag_condition":
             result = await port.has_tag(normalize_tag(current["tag"]))
-            current = nodes[current["yes"] if result else current["no"]]
+            current = destination(current["yes"] if result else current["no"])
             continue
         elif kind == "phone_condition":
             result = await port.has_phone(current.get("phone_check_mode", "provided"))
-            current = nodes[current["yes"] if result else current["no"]]
+            current = destination(current["yes"] if result else current["no"])
             continue
         elif kind == "schedule":
             result = in_schedule(current, port.now())
-            current = nodes[current["yes"] if result else current["no"]]
+            current = destination(current["yes"] if result else current["no"])
             continue
         if kind in {"wait", "wait_reply"}:
             if kind == "wait_reply":
@@ -753,11 +765,11 @@ async def advance(
             return
         if kind == "set_variable":
             variables[current["variable"]] = render(current["value"], variables)[:1000]
-            current = nodes[current["next"]]
+            current = destination(current["next"])
             continue
         if kind == "variable_condition":
             result = compare_variable(current, variables)
-            current = nodes[current["yes"] if result else current["no"]]
+            current = destination(current["yes"] if result else current["no"])
             continue
         if kind == "condition":
             result = (
@@ -765,7 +777,7 @@ async def advance(
                 if current["condition"] == "contains"
                 else await port.check(current)
             )
-            current = nodes[current["yes"] if result else current["no"]]
+            current = destination(current["yes"] if result else current["no"])
             continue
         if kind == "random":
             # Stable for retries of the same callback; different incoming events
@@ -802,8 +814,14 @@ async def advance(
                 keyboard=keyboard,
                 media_id=current["media_id"],
             )
-            if kind in {"question", "contact"} or current["buttons"]:
+            if kind in {"question", "contact"} or any(
+                b["kind"] == "next" for b in current["buttons"]
+            ):
                 return
+            if current["buttons"]:
+                # Link-only messages have no in-chat continuation to wait for.
+                current = destination("")
+                continue
         elif kind == "promo":
             await port.promo(current["campaign_id"], variables)
         elif kind == "operator":
@@ -814,6 +832,8 @@ async def advance(
             state["stack"] = []
             return
         elif kind == "end":
+            if state.get("stack"):
+                raise ValueError("Подцепочка должна завершаться блоком «Возврат»")
             if current["text"].strip():
                 await port.emit(
                     render(current["text"], variables),
@@ -821,8 +841,12 @@ async def advance(
                 )
             state["node_id"] = ""
             state["stack"] = []
+            state["nonce"] = ""
+            state.pop("waiting", None)
+            variables.pop("_wait_id", None)
+            variables.pop("_contact_reminder", None)
             return
-        current = nodes[current["next"]]
+        current = destination(current["next"])
     raise ValueError("Слишком много шагов сценария без ответа пользователя")
 
 

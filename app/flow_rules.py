@@ -101,9 +101,14 @@ def subflow_errors(nodes, outputs):
                 errors.append(
                     f"{node['title']}: «Возврат» допустим только внутри подцепочки."
                 )
-            if root["type"] == "subflow" and node["type"] == "end":
+            implicit_end = any(not target for _, target in outputs(node)) or (
+                node["type"] == "message"
+                and node["buttons"]
+                and all(b["kind"] == "link" for b in node["buttons"])
+            )
+            if root["type"] == "subflow" and (node["type"] == "end" or implicit_end):
                 errors.append(
-                    f"{node['title']}: завершите подцепочку блоком «Возврат», а не «Завершение»."
+                    f"{node['title']}: завершите подцепочку блоком «Возврат», а не «Завершение» или пустым переходом."
                 )
             if node["type"] == "call_subflow":
                 target = by_id.get(node["subflow_id"])

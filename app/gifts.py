@@ -351,7 +351,7 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
         if gift is None:
             await notice(
                 "Пока нет подарков к получению. Оставьте подходящий комментарий под постом акции. "
-                "Если подарок уже получен, промокод есть выше в переписке. Для обычного меню напишите «меню»."
+                "Если подарок уже получен, промокод есть выше в переписке."
             )
         else:
             campaign = session.get(Campaign, gift.campaign_id)

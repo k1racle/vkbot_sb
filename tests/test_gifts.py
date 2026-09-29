@@ -293,6 +293,7 @@ def test_cannot_claim_another_user_or_group_gift(invitations):
         ),
     )
     assert "Пока нет подарков" in sent.call_args.args[1]
+    assert "меню" not in sent.call_args.args[1].casefold()
     forged = message("Подарок", number=2)
     forged["group_id"] = 999
     client.post("/vk/callback", json=forged)
