@@ -37,6 +37,7 @@
     history = [],
     previewState = {};
   const graph = () => flow.graph;
+  const entryDefaults = {mode: 'default', keywords: '', match: 'contains'};
   const narrowEditor = window.matchMedia('(max-width: 760px)');
   function collapseLibrary(collapsed) {
     $('editor').classList.toggle('library-collapsed', collapsed);
@@ -156,7 +157,9 @@
     if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
     if (n.type === 'random') return `${n.variants.length} вариантов · один ответ за шаг\n${n.variants[0] || 'Добавьте тексты справа'}`;
     if (n.type === 'condition') return n.condition === 'member' ? 'Подписан на сообщество?' : n.condition === 'promo_sent' ? 'Уже получал промокод?' : `Содержит: ${n.words || 'укажите слова'}`;
-    if (n.type === 'start') return 'Первое сообщение или команда «меню»';
+    if (n.type === 'start') return graph().entry?.mode === 'keywords'
+      ? `Запуск по фразам: ${graph().entry.keywords || 'укажите справа'}`
+      : 'По умолчанию: первое сообщение или команда «меню»';
     if (n.type === 'promo') return campaigns.find(c => c.id === n.campaign_id)?.title || 'Выберите кампанию';
     return n.text || 'Нажмите, чтобы настроить';
   }
@@ -298,8 +301,16 @@
       return;
     }
     let html = `<span class="eyebrow">НАСТРОЙКИ БЛОКА</span><h3>${Admin.icon(kinds[n.type][1])} ${kinds[n.type][0]}</h3><label>Название блока<input data-field="title" value="${e(n.title)}" maxlength="120"></label>`;
-    if (n.type === "start")
-      html += `<label>Название сценария<input id="scenario-title" value="${e(flow.title)}" maxlength="120"></label><p class="hint">Запускается на первое сообщение и команду «меню». Активен один входной сценарий.</p>`;
+    if (n.type === "start") {
+      const entry = {...entryDefaults, ...graph().entry};
+      html += `<label>Название сценария<input id="scenario-title" value="${e(flow.title)}" maxlength="120"></label><h4>Условия запуска</h4><label>Когда запускать<select data-entry="mode"><option value="default" ${entry.mode === 'default' ? 'selected' : ''}>По умолчанию</option><option value="keywords" ${entry.mode === 'keywords' ? 'selected' : ''}>По ключевым фразам</option></select></label>`;
+      if (entry.mode === 'keywords') {
+        html += `<label>Ключевые слова и фразы<textarea data-entry="keywords" maxlength="2000" placeholder="хочу курс&#10;записаться на курс">${e(entry.keywords)}</textarea></label><p class="hint">Каждая фраза с новой строки или через запятую. Достаточно любой одной. До 30 фраз. Пустой список не запускает сценарий.</p><label>Совпадение<select data-entry="match"><option value="contains" ${entry.match === 'contains' ? 'selected' : ''}>Фраза внутри сообщения</option><option value="exact" ${entry.match === 'exact' ? 'selected' : ''}>Сообщение целиком</option></select></label><p class="hint">Без учёта регистра, лишних пробелов и знаков препинания. «ХОЧУ КУРС!» подходит для «хочу курс», а «курс» не совпадёт с «курсы».</p><p class="notice">Ключевая фраза начинает цепочку заново и отменяет прежние ожидания клиента. Дальнейшие ответы продолжают эту цепочку. Во время общения с менеджером автоматического переключения нет.</p><p class="hint">При совпадении нескольких сценариев выбирается точное совпадение, затем самая длинная фраза. Одинаковые фразы в разных активных сценариях запрещены. Команды «Меню», «Стоп», получение подарка и вызов менеджера имеют приоритет. Кнопки текущего диалога продолжают его, а не запускают другой сценарий.</p>`;
+      } else {
+        html += '<p class="hint">Запускается на первое сообщение без подходящей ключевой фразы и по командам «Меню» / «Начать». В проекте один сценарий по умолчанию и несколько сценариев по фразам.</p>';
+      }
+      html += '<p class="hint">Условия применяются после публикации, только в этом проекте и при включённых ответах в «Общении». Предпросмотр открывает выбранную цепочку напрямую; запуск по фразе проверяйте в сообщениях сообщества.</p>';
+    }
     if (['wait', 'wait_reply'].includes(n.type)) {
       html += `<label>Сколько ждать<input type="number" data-field="delay_value" min="1" max="315360000" step="1" value="${e(n.delay_value)}"></label><label>Единица времени<select data-field="delay_unit">${Object.entries({seconds: 'Секунды', minutes: 'Минуты', hours: 'Часы', days: 'Дни'}).map(([value, label]) => `<option value="${value}" ${n.delay_unit === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p class="hint">Например: 3 часа. От 1 секунды до 3650 дней. Таймер сохраняется при перезапуске. Сообщение добавьте отдельным следующим блоком.</p><p class="hint">${n.type === 'wait_reply' ? 'Текстовый ответ до срока выбирает ветку «Ответил». Без ответа сработает «Время вышло».' : 'Обычный ответ клиента не сокращает паузу.'} «Меню» начинает диалог заново. «Стоп», запрет сообщений и передача менеджеру отменяют ожидание.</p><p class="hint">Публикация новой версии, приостановка сценария, проекта или раздела «Общение» отменяет старые таймеры. При недоступности сервера продолжение произойдёт после его запуска, не раньше срока.</p>`;
     }
@@ -444,6 +455,15 @@
         flow.title = ev.target.value;
         markDirty();
       };
+    $('block-inspector').querySelectorAll('[data-entry]').forEach(input => {
+      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
+        snapshot();
+        graph().entry = {...entryDefaults, ...graph().entry, [input.dataset.entry]: input.value};
+        markDirty();
+        renderNodes();
+        if (input.dataset.entry === 'mode') renderInspector();
+      });
+    });
     if ($("add-button"))
       $("add-button").onclick = () => {
         snapshot();
@@ -555,7 +575,7 @@
     select.innerHTML = flows
       .map(
         (f) =>
-          `<option value="${f.id}" ${flow?.id === f.id ? "selected" : ""}>${e(f.title)}${f.active ? " · активен" : ""}</option>`,
+          `<option value="${f.id}" ${flow?.id === f.id ? "selected" : ""}>${e(f.title)}${f.active ? (f.published_entry?.mode === 'keywords' ? ' · по фразам' : ' · по умолчанию') : ''}</option>`,
       )
       .join("");
   }
@@ -576,6 +596,7 @@
   }
   function selectFlow(id) {
     flow = structuredClone(flows.find((f) => f.id === Number(id)));
+    flow.graph.entry = {...entryDefaults, ...flow.graph.entry};
     flow.graph.nodes = flow.graph.nodes.map(n => ({...structuredClone(blockDefaults), ...n}));
     selected = flow.graph.nodes.find((n) => n.type === "start")?.id;
     dirty = false;
@@ -710,14 +731,14 @@
     flow &&
     action(async () => {
       if (!(await validate())) return;
-      if (flows.some(f => f.active) && !confirm('Опубликовать сценарий? Незавершённые ожидания текущего активного сценария будут отменены. Новые диалоги пойдут по новой версии.')) return;
+      const keywordEntry = graph().entry?.mode === 'keywords';
+      const replacesDefault = !keywordEntry && flows.some(f => f.active && f.id !== flow.id && f.published_entry?.mode !== 'keywords');
+      if ((flow.active || replacesDefault) && !confirm(`Опубликовать сценарий? Ожидания предыдущей версии этого сценария будут отменены.${replacesDefault ? ' Прежний сценарий по умолчанию будет приостановлен вместе с его ожиданиями.' : ''} Другие сценарии по фразам продолжат работать.`)) return;
       await save();
       const result = await Admin.api(`/scenarios/${flow.id}/publish`, "POST", {
         revision: flow.revision,
       });
-      flows = flows.map((f) =>
-        f.id === result.id ? result : { ...f, active: false },
-      );
+      flows = (await Admin.api('/scenarios')).scenarios;
       flow = structuredClone(result);
       refreshStatus();
       renderNodes();

@@ -31,6 +31,7 @@ from .flow_rules import MAX_TAGS
 from .gifts import delivered, handle_gift_request
 from .operators import configured_operators, reset_handoff
 from .waits import cancel_waits, schedule_wait
+from .scenario_triggers import choose_scenario
 
 logger = logging.getLogger(__name__)
 _locks = weakref.WeakValueDictionary()
@@ -594,10 +595,19 @@ async def handle_message(payload, *, preferences_only=False):
                     await port.handoff("")
                     conversation.handoff = True
                 else:
-                    scenario = (
+                    scenarios = (
                         session.query(Scenario)
                         .filter_by(active=True, is_deleted=False)
-                        .first()
+                        .filter(Scenario.published.is_not(None))
+                        .order_by(Scenario.id)
+                        .all()
+                    )
+                    scenario, keyword_start = choose_scenario(
+                        [s for s in scenarios if s.published],
+                        conversation,
+                        event.text,
+                        restart=restart,
+                        has_payload=bool(incoming),
                     )
                     if scenario and scenario.published:
                         changed = (
@@ -609,10 +619,12 @@ async def handle_message(payload, *, preferences_only=False):
                                 "Эта кнопка устарела. Напишите «меню», чтобы начать заново."
                             )
                         else:
-                            if changed:
+                            if changed or keyword_start:
                                 cancel_waits(
                                     session,
-                                    "Версия сценария изменилась",
+                                    "Запуск по ключевой фразе"
+                                    if keyword_start
+                                    else "Версия сценария изменилась",
                                     user_id=user_id,
                                 )
                                 conversation.node_id = ""
@@ -638,7 +650,7 @@ async def handle_message(payload, *, preferences_only=False):
                                 event.text,
                                 incoming,
                                 port,
-                                restart=restart,
+                                restart=restart or keyword_start,
                             )
                             conversation.scenario_id, conversation.version = (
                                 scenario.id,

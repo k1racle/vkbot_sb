@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
+from .scenario_triggers import EntryRule, entry_errors
 from .flow_rules import (
     MAX_CALL_DEPTH,
     in_schedule,
@@ -156,6 +157,7 @@ class Node(BaseModel):
 
 class Graph(BaseModel):
     nodes: list[Node] = Field(default_factory=list, max_length=100)
+    entry: EntryRule = Field(default_factory=EntryRule)
 
 
 def outputs(node):
@@ -185,7 +187,7 @@ def outputs(node):
 
 
 def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
-    errors = []
+    errors = entry_errors(graph)
     nodes = graph["nodes"]
     by_id = {n["id"]: n for n in nodes}
     starts = [n for n in nodes if n["type"] == "start"]

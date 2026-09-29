@@ -24,6 +24,7 @@ from .flows import Graph, advance, render, starter_graph, validate_graph
 from .flow_rules import MAX_TAGS, normalize_tag
 from .operators import reset_handoff
 from .waits import cancel_waits, clear_wait_reference
+from .scenario_triggers import entry_rule, keyword_graph, phrases
 
 
 def authorize(request: Request):
@@ -73,6 +74,7 @@ def serialize(item):
         "active": item.active,
         "has_published": item.published is not None,
         "has_changes": item.draft != item.published,
+        "published_entry": entry_rule(item.published),
     }
 
 
@@ -151,15 +153,44 @@ def save_scenario(scenario_id: int, body: DraftInput):
 @router.post("/scenarios/{scenario_id}/publish")
 def publish_scenario(scenario_id: int, body: RevisionInput):
     with SessionLocal() as session:
-        # One published entry scenario for incoming private messages.
+        # One default entry plus any number of non-conflicting keyword entries.
         if session.bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(-731942)"))
         item = get_scenario(session, scenario_id, body.revision)
         errors = checked(session, item.draft)
         if errors:
             raise HTTPException(422, errors)
-        session.query(Scenario).filter(Scenario.id != item.id).update({"active": False})
-        cancel_waits(session, "Опубликована новая версия сценария")
+        others = (
+            session.query(Scenario)
+            .filter(
+                Scenario.id != item.id,
+                Scenario.active.is_(True),
+                Scenario.is_deleted.is_(False),
+            )
+            .order_by(Scenario.id)
+            .all()
+        )
+        if keyword_graph(item.draft):
+            words = set(phrases(entry_rule(item.draft).get("keywords", "")))
+            for other in others:
+                if keyword_graph(other.published) and words.intersection(
+                    phrases(entry_rule(other.published).get("keywords", ""))
+                ):
+                    raise HTTPException(
+                        422,
+                        [
+                            f"Ключевая фраза уже используется в активном сценарии «{other.title}». Измените фразы или приостановите его."
+                        ],
+                    )
+        else:
+            for other in others:
+                if not keyword_graph(other.published):
+                    other.active = False
+                    other.revision += 1
+                    cancel_waits(
+                        session, "Сменился сценарий по умолчанию", scenario_id=other.id
+                    )
+        cancel_waits(session, "Опубликована новая версия сценария", scenario_id=item.id)
         item.published, item.active = copy.deepcopy(item.draft), True
         item.version += 1
         item.revision += 1
