@@ -353,3 +353,59 @@ def test_same_keywords_are_isolated_between_projects(two_projects):
     sent = [c for c in env.network.calls if c["method"] == "messages.send"]
     assert {c["params"]["message"] for c in sent} == {"Группа А", "Группа Б"}
     assert {c["params"]["access_token"] for c in sent} == {first.token, second.token}
+
+
+def test_published_routes_and_waits_on_real_storage(storage, monkeypatch):
+    import asyncio
+    import weakref
+    from unittest.mock import AsyncMock
+
+    from app import dialog, projects, scenario_api, vk_api
+    from test_project_storage import create_other
+
+    projects.init_registry()
+    first = projects.list_projects()[0]
+    second = create_other(storage, enabled=True)
+    monkeypatch.setattr(dialog, "_locks", weakref.WeakValueDictionary())
+    monkeypatch.setattr(vk_api, "send_message", AsyncMock())
+    monkeypatch.setattr(vk_api, "get_user_name", AsyncMock(return_value="Анна"))
+
+    def publish_graph(data):
+        with db.SessionLocal() as session:
+            row = db.Scenario(title="Проверка", draft=data)
+            session.add(row)
+            session.commit()
+            ident = row.id
+        return scenario_api.publish_scenario(
+            ident, scenario_api.RevisionInput(revision=0)
+        )
+
+    for project in (first, second):
+        with projects.project_scope(project):
+            old_default = publish_graph(wait_graph())
+            incoming = event()
+            incoming["group_id"] = project.group_id
+            asyncio.run(dialog.handle_message(incoming))
+            data = wait_graph()
+            data["entry"] = {
+                "mode": "keywords",
+                "keywords": "хочу курс",
+                "match": "contains",
+            }
+            keyword = publish_graph(data)
+            with db.SessionLocal() as session:
+                assert session.query(db.ScenarioWait).one().status == "pending"
+            incoming = event("хочу курс", 2)
+            incoming["group_id"] = project.group_id
+            asyncio.run(dialog.handle_message(incoming))
+            publish_graph(graph("Новое меню", None))
+            with db.SessionLocal() as session:
+                assert not session.get(db.Scenario, old_default["id"]).active
+                assert session.get(db.Scenario, keyword["id"]).active
+                jobs = session.query(db.ScenarioWait).all()
+                assert len(jobs) == 2
+                assert {job.status for job in jobs} == {"pending", "cancelled"}
+                assert (
+                    next(j for j in jobs if j.status == "pending").scenario_id
+                    == keyword["id"]
+                )
