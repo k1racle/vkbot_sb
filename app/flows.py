@@ -106,6 +106,18 @@ class Node(BaseModel):
     phone_check_mode: Literal["provided", "any"] = "provided"
     allow_skip: bool = True
     error_text: str = Field(default="", max_length=500)
+    reminder_enabled: bool = False
+    reminder_delay_value: int = Field(default=3, ge=1, le=MAX_WAIT_SECONDS, strict=True)
+    reminder_delay_unit: Literal["seconds", "minutes", "hours", "days"] = "hours"
+    reminder_text: str = Field(default="", max_length=3500)
+    allow_later: bool = False
+    later_text: str = Field(default="", max_length=3500)
+    later_reminder_enabled: bool = False
+    later_reminder_delay_value: int = Field(
+        default=24, ge=1, le=MAX_WAIT_SECONDS, strict=True
+    )
+    later_reminder_delay_unit: Literal["seconds", "minutes", "hours", "days"] = "hours"
+    later_reminder_text: str = Field(default="", max_length=3500)
     value: str = Field(default="", max_length=1000)
     comparison: Literal[
         "equals",
@@ -185,6 +197,13 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
         prefix = n["title"] or n["id"]
         if n["type"] in {"wait", "wait_reply"} and wait_seconds(n) > MAX_WAIT_SECONDS:
             errors.append(f"{prefix}: ожидание не должно превышать 3650 дней (10 лет).")
+        if n["type"] == "contact":
+            for mode in ("silence", "later"):
+                enabled, seconds, _ = contact_reminder(n, mode)
+                if enabled and seconds > MAX_WAIT_SECONDS:
+                    errors.append(
+                        f"{prefix}: напоминание не должно быть позже 3650 дней (10 лет)."
+                    )
         if (
             n["type"] in {"message", "question", "contact", "wait_reply"}
             and not n["text"].strip()
@@ -433,6 +452,132 @@ def wait_seconds(node):
     return node["delay_value"] * WAIT_UNITS[node["delay_unit"]]
 
 
+def contact_reminder(node, mode):
+    """Defaults keep existing published graphs unchanged, including old JSON."""
+    later = mode == "later"
+    prefix = "later_reminder" if later else "reminder"
+    enabled = bool(node.get(f"{prefix}_enabled", False))
+    if later:
+        enabled = enabled and node.get("allow_later", False)
+    seconds = (
+        node.get(f"{prefix}_delay_value", 24 if later else 3)
+        * WAIT_UNITS[node.get(f"{prefix}_delay_unit", "hours")]
+    )
+    label = (
+        "адрес электронной почты"
+        if node["contact_type"] == "email"
+        else "номер телефона"
+    )
+    message = node.get(f"{prefix}_text", "").strip() or (
+        f"Напоминаем: пришлите {label}, когда вам будет удобно, чтобы продолжить."
+    )
+    return enabled, seconds, message
+
+
+def contact_keyboard(node, state):
+    import json
+
+    if not node.get("allow_later", False):
+        return {"one_time": False, "buttons": []}
+    return {
+        "one_time": False,
+        "buttons": [
+            [
+                {
+                    "action": {
+                        "type": "text",
+                        "label": "Позже",
+                        "payload": json.dumps(
+                            {
+                                "flow": state["version"],
+                                "node": node["id"],
+                                "nonce": state.get("nonce", ""),
+                                "contact_action": "later",
+                            }
+                        ),
+                    },
+                    "color": "secondary",
+                }
+            ]
+        ],
+    }
+
+
+def arm_contact_reminder(node, state, mode):
+    state.pop("waiting", None)
+    state["variables"].pop("_contact_reminder", None)
+    enabled, seconds, _ = contact_reminder(node, mode)
+    if enabled:
+        state["variables"]["_contact_reminder"] = {"node_id": node["id"], "mode": mode}
+        state["waiting"] = {
+            "node_id": node["id"],
+            "seconds": seconds,
+            "kind": "contact",
+        }
+
+
+async def accept_contact(node, state, text, payload, port, *, resume_wait=False):
+    """Stay at the contact after reminders/later/errors; only valid/skip advances."""
+    variables = state["variables"]
+    keyboard = contact_keyboard(node, state)
+    if resume_wait:
+        pending = variables.pop("_contact_reminder", {})
+        state.pop("waiting", None)
+        if pending.get("node_id") == node["id"] and pending.get("mode") in {
+            "silence",
+            "later",
+        }:
+            enabled, _, message = contact_reminder(node, pending["mode"])
+            if enabled:
+                await port.emit(render(message, variables), keyboard=keyboard)
+        return False
+    if payload and not (
+        node.get("allow_later", False)
+        and payload.get("contact_action") == "later"
+        and payload.get("node") == node["id"]
+        and payload.get("flow") == state.get("version")
+        and payload.get("nonce") == state.get("nonce")
+    ):
+        await port.emit(
+            "Эта кнопка устарела. Пришлите контакт или напишите «меню».",
+            keyboard=keyboard,
+        )
+        return False
+    later = node.get("allow_later", False) and (
+        payload or text.strip().casefold() == "позже"
+    )
+    if later:
+        await port.cancel_contact_wait(state, "Клиент выбрал Позже")
+        arm_contact_reminder(node, state, "later")
+        message = (
+            node.get("later_text", "").strip()
+            or "Хорошо! Пришлите контакт, когда вам будет удобно. Я продолжу с этого места."
+        )
+        await port.emit(render(message, variables), keyboard=keyboard)
+        return False
+    skipped = node["allow_skip"] and text.strip().casefold() == "пропустить"
+    value = normalize_contact(text, node["contact_type"])
+    if not skipped and value is None:
+        default_error = (
+            "Введите телефон: от 10 до 15 цифр, можно с +, пробелами и скобками. Например +7 999 123-45-67."
+            if node["contact_type"] == "phone"
+            else "Введите email в формате name@example.com."
+        )
+        await port.emit(node["error_text"] or default_error, keyboard=keyboard)
+        return False
+    await port.cancel_contact_wait(
+        state, "Сбор контакта пропущен" if skipped else "Контакт получен"
+    )
+    state.pop("waiting", None)
+    variables.pop("_contact_reminder", None)
+    if skipped:
+        variables.pop(node["variable"], None)
+    else:
+        variables[node["variable"]] = value
+        await port.save_contact(node["contact_type"], value)
+    return True
+
+
 async def advance(
     graph, state, text, payload, port, *, restart=False, resume_wait=False
 ):
@@ -447,6 +592,7 @@ async def advance(
     if restart or not current:
         state["handoff"] = False
         state.pop("waiting", None)
+        variables.pop("_contact_reminder", None)
         state["stack"] = []
         current = next(n for n in graph["nodes"] if n["type"] == "start")
     elif current["type"] == "wait_reply":
@@ -480,6 +626,12 @@ async def advance(
             return  # Incoming text/buttons never skip or restart a timer.
         state.pop("waiting", None)
         current = nodes[current["next"]]
+    elif current["type"] == "contact":
+        if not await accept_contact(
+            current, state, text, payload, port, resume_wait=resume_wait
+        ):
+            return
+        current = nodes[current["next"]]
     elif payload:
         valid = (
             current["type"] == "message"
@@ -499,25 +651,6 @@ async def advance(
             )
             return
         current = nodes[current["buttons"][index]["target"]]
-    elif current["type"] == "contact":
-        skipped = current["allow_skip"] and text.strip().casefold() == "пропустить"
-        value = normalize_contact(text, current["contact_type"])
-        if skipped:
-            variables.pop(current["variable"], None)
-        elif value is None:
-            default_error = (
-                "Введите телефон: от 10 до 15 цифр, можно с +, пробелами и скобками. Например +7 999 123-45-67."
-                if current["contact_type"] == "phone"
-                else "Введите email в формате name@example.com."
-            )
-            await port.emit(current["error_text"] or default_error)
-            return
-        else:
-            variables[current["variable"]] = value
-            # LivePort persists a volunteered phone in this project's client card;
-            # PreviewPort never writes contacts or calls VK.
-            await port.save_contact(current["contact_type"], value)
-        current = nodes[current["next"]]
     elif current["type"] == "question":
         if not text.strip():
             await port.emit("Пожалуйста, ответьте текстом.")
@@ -650,8 +783,12 @@ async def advance(
             keyboard = (
                 keyboard_for(current, state["version"], state["nonce"])
                 if kind == "message"
+                else contact_keyboard(current, state)
+                if kind == "contact"
                 else {"one_time": False, "buttons": []}
             )
+            if kind == "contact":
+                arm_contact_reminder(current, state, "silence")
             prompt = render(current["text"], variables)
             if kind == "contact" and current["allow_skip"]:
                 hint = (

@@ -128,6 +128,9 @@ def main():
             from tests.browser_phone import exercise_phone
 
             exercise_phone(page, output)
+            from tests.browser_contact_reminders import exercise_contact_reminders
+
+            exercise_contact_reminders(page, output)
             # The same browser cookie in another tab cannot switch this tab's API.
             other = context.new_page()
             other.on("pageerror", lambda error: errors.append(str(error)))

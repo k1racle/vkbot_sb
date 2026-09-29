@@ -85,6 +85,9 @@ class Port:
     async def save_contact(self, kind, value):
         self.contacts.append((kind, value))
 
+    async def cancel_contact_wait(self, state, reason):
+        state.pop("waiting", None)
+
 
 @pytest.mark.parametrize(
     "kind,value,expected",

@@ -23,7 +23,7 @@ from .dialog import lock_conversation, user_lock
 from .flows import Graph, advance, render, starter_graph, validate_graph
 from .flow_rules import MAX_TAGS, normalize_tag
 from .operators import reset_handoff
-from .waits import cancel_waits
+from .waits import cancel_waits, clear_wait_reference
 
 
 def authorize(request: Request):
@@ -311,6 +311,9 @@ async def preview(body: PreviewInput):
                 if kind == "phone":
                     state["phone_status"] = "provided"  # No customer/database writes.
 
+            async def cancel_contact_wait(self, state, reason):
+                state.pop("waiting", None)
+
             async def has_phone(self, mode):
                 status = state.get("phone_status", "missing")
                 return status == "provided" or (mode == "any" and status == "profile")
@@ -415,6 +418,10 @@ def conversations():
                             "status": job.status,
                             "due_at": job.due_at.isoformat() + "Z",
                             "error": job.error,
+                            "contact_reminder": job.status == "pending"
+                            and c.variables.get("_wait_id") == job.id
+                            and c.variables.get("_contact_reminder", {}).get("node_id")
+                            == job.node_id,
                         }
                         for job in session.query(ScenarioWait)
                         .filter_by(user_id=c.user_id)
@@ -471,6 +478,6 @@ async def cancel_conversation_wait(user_id: int):
             cancelled = cancel_waits(session, "Отменено в админке", user_id=user_id)
             row = session.get(Conversation, user_id)
             if row and cancelled:
-                row.node_id = ""
+                clear_wait_reference(row)
             session.commit()
             return {"ok": True}

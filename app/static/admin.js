@@ -301,13 +301,14 @@ async function loadClients() {
       const box = document.createElement('div');
       box.className = 'notice';
       const labels = { pending: 'Ожидание до', done: 'Ожидание завершено', cancelled: 'Ожидание отменено', failed: 'Ошибка ожидания' };
+      if (waiting.contact_reminder) labels.pending = 'Напоминание о контакте';
       box.innerHTML = `${Admin.icon('clock')} <strong>${e(labels[waiting.status] || waiting.status)}</strong>${waiting.status === 'pending' ? ` ${e(new Date(waiting.due_at).toLocaleString('ru-RU'))} (время вашего устройства)` : ''}${waiting.error ? `<div class="hint">${e(waiting.error)}</div>` : ''}`;
       if (waiting.status === 'pending') {
         const cancel = document.createElement('button');
         cancel.className = 'btn secondary small';
-        cancel.textContent = 'Отменить ожидание';
+        cancel.textContent = waiting.contact_reminder ? 'Отменить напоминание' : 'Отменить ожидание';
         cancel.onclick = async () => {
-          if (!confirm('Отменить отложенное продолжение? Клиент сможет начать диалог заново через «Меню».')) return;
+          if (!confirm(waiting.contact_reminder ? 'Отменить напоминание? Бот продолжит принимать контакт без повторных напоминаний.' : 'Отменить отложенное продолжение? Клиент сможет начать диалог заново через «Меню».')) return;
           cancel.disabled = true;
           try {
             await Admin.api(`/conversations/${clients[index].user_id}/cancel-wait`, 'POST');

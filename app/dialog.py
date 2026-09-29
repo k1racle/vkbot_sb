@@ -157,6 +157,11 @@ class LivePort:
             if client:
                 client.phone, client.phone_source = value, "dialog"
 
+    async def cancel_contact_wait(self, state, reason):
+        cancel_waits(self.session, reason, user_id=self.user_id)
+        state["variables"].pop("_wait_id", None)
+        self.session.flush()
+
     async def has_phone(self, mode):
         from .db import Client
 

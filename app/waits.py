@@ -10,7 +10,7 @@ from sqlalchemy import update
 
 from . import clients, db, projects, vk_api
 from .config import get_settings
-from .flows import advance
+from .flows import advance, contact_reminder
 
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 4
@@ -62,12 +62,24 @@ def event_for(session, job):
     return event
 
 
+def clear_wait_reference(row):
+    # A contact reminder is not a deadline for accepting the number. Even if
+    # sending failed or an admin cancelled it, keep the contact question open.
+    pending_contact = row.variables.get("_contact_reminder", {})
+    if pending_contact.get("node_id") != row.node_id:
+        row.node_id = ""
+    row.variables = {
+        k: v
+        for k, v in row.variables.items()
+        if k not in {"_wait_id", "_contact_reminder"}
+    }
+
+
 def stop(session, job, reason, *, status="cancelled"):
     job.status, job.active_user, job.error = status, None, reason
     row = session.get(db.Conversation, job.user_id)
     if row and row.variables.get("_wait_id") == job.id:
-        row.node_id = ""
-        row.variables = {k: v for k, v in row.variables.items() if k != "_wait_id"}
+        clear_wait_reference(row)
     event = event_for(session, job)
     event.status, event.error = status, reason
     session.commit()
@@ -155,6 +167,7 @@ async def worker_tick():
                 if not waiting_node or waiting_node.get("type") not in {
                     "wait",
                     "wait_reply",
+                    "contact",
                 }:
                     stop(
                         session,
@@ -162,6 +175,16 @@ async def worker_tick():
                         "Блок ожидания отсутствует в опубликованном сценарии",
                     )
                     return
+                if waiting_node["type"] == "contact":
+                    pending_contact = row.variables.get("_contact_reminder", {})
+                    mode = pending_contact.get("mode")
+                    if (
+                        pending_contact.get("node_id") != job.node_id
+                        or mode not in {"silence", "later"}
+                        or not contact_reminder(waiting_node, mode)[0]
+                    ):
+                        stop(session, job, "Напоминание о контакте больше не требуется")
+                        return
                 if (
                     not client
                     or client.unsubscribed

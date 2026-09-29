@@ -767,7 +767,7 @@ th {
 }
 .editor {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 292px;
+  grid-template-columns: 205px minmax(0, 1fr) 292px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -1235,7 +1235,7 @@ a:focus-visible {
 }
 @media (min-width: 1700px) {
   .editor {
-    grid-template-columns: minmax(0, 1fr) 330px;
+    grid-template-columns: 215px minmax(0, 1fr) 330px;
   }
   .main-content {
     padding: 38px 45px;
@@ -1253,7 +1253,7 @@ a:focus-visible {
     padding: 25px 20px;
   }
   .editor {
-    grid-template-columns: minmax(0, 1fr) 260px;
+    grid-template-columns: 190px minmax(0, 1fr) 260px;
   }
   .inspector {
     padding: 17px;
@@ -1740,9 +1740,30 @@ body.flow-fullscreen > .skip-link { visibility: hidden; }
 .preview-dialog { max-height: 95dvh; }
 @media (max-width: 760px) {
   #flow-app.is-fullscreen { padding: 5px; }
-  #flow-app.is-fullscreen .editor { display: grid; grid-template-columns: 1fr; grid-template-rows: minmax(160px, 1fr) minmax(140px, .8fr); }
-  #flow-app.is-fullscreen .block-palette { max-height: 75px; overflow: auto; padding: 5px; }
+  #flow-app.is-fullscreen .editor { display: grid; grid-template-columns: 1fr; grid-template-rows: auto minmax(160px, 1fr) minmax(140px, .8fr); }
   #flow-app.is-fullscreen .inspector { overflow: auto; padding: 10px; }
   #flow-app.is-fullscreen .flow-toolbar .btn { padding: 7px; font-size: 11px; }
   .preview-controls { grid-template-columns: 1fr; }
+}
+
+/* The block library lives beside the canvas, with its own scrolling area. */
+.block-library { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fbfcfa; border-right: 1px solid var(--line); }
+.library-toggle { display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 13px; width: 100%; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); text-align: left; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.library-toggle:hover { background: var(--green-light, #eaf4ef); }
+.library-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 10px; }
+.block-library .block-palette { display: block; padding: 12px; min-height: 0; background: transparent; border: 0; }
+.block-library .block-palette + .block-palette { padding-top: 0; }
+.block-library .palette-group { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+.block-library .palette-group + .palette-group { margin-top: 13px; padding-top: 13px; }
+.block-library .palette-group > span { margin: 0 0 6px; font-size: 8px; }
+.block-library .palette-group button { width: 100%; justify-content: flex-start; text-align: left; font-size: 11px; padding: 9px 8px; background: #fff; }
+.editor.library-collapsed { grid-template-columns: 44px minmax(0, 1fr) 292px; }
+.editor.library-collapsed .library-title { display: none; }
+@media (min-width: 1700px) { .editor.library-collapsed { grid-template-columns: 44px minmax(0, 1fr) 330px; } }
+@media (min-width: 761px) and (max-width: 1200px) { .editor.library-collapsed { grid-template-columns: 44px minmax(0, 1fr) 260px; } }
+@media (max-width: 760px) {
+  .block-library { position: relative; border-right: 0; border-bottom: 1px solid var(--line); flex-shrink: 0; z-index: 5; }
+  .editor.library-collapsed .library-title { display: inline; }
+  .library-toggle { min-height: 43px; padding: 10px 12px; border-bottom: 0; }
+  .library-content { position: absolute; top: 100%; left: 0; width: min(240px, 100%); max-height: min(65dvh, 480px); border: 1px solid var(--line); border-radius: 0 0 12px 0; background: #fbfcfa; box-shadow: 5px 12px 24px #10291e22; }
 }

@@ -23,7 +23,7 @@
     call_subflow: ["Вызвать подцепочку", "workflow"],
     return: ["Возврат", "arrow-left"],
   };
-  const blockDefaults = { phone_check_mode: 'provided', tag: '', tag_action: 'add', timezone: 'Europe/Moscow', weekdays: [0, 1, 2, 3, 4], time_from: '09:00', time_to: '18:00', date_from: '', date_to: '', subflow_id: '', pass_variables: [], return_variables: [] };
+  const blockDefaults = { phone_check_mode: 'provided', reminder_enabled: false, reminder_delay_value: 3, reminder_delay_unit: 'hours', reminder_text: '', allow_later: false, later_text: '', later_reminder_enabled: false, later_reminder_delay_value: 24, later_reminder_delay_unit: 'hours', later_reminder_text: '', tag: '', tag_action: 'add', timezone: 'Europe/Moscow', weekdays: [0, 1, 2, 3, 4], time_from: '09:00', time_to: '18:00', date_from: '', date_to: '', subflow_id: '', pass_variables: [], return_variables: [] };
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   let flows = [],
     campaigns = [],
@@ -37,6 +37,17 @@
     history = [],
     previewState = {};
   const graph = () => flow.graph;
+  const narrowEditor = window.matchMedia('(max-width: 760px)');
+  function collapseLibrary(collapsed) {
+    $('editor').classList.toggle('library-collapsed', collapsed);
+    $('block-library-content').hidden = collapsed;
+    $('toggle-block-library').setAttribute('aria-expanded', String(!collapsed));
+    $('toggle-block-library').title = collapsed ? 'Открыть каталог блоков' : 'Свернуть каталог блоков';
+    requestAnimationFrame(drawEdges);
+  }
+  $('toggle-block-library').onclick = () => collapseLibrary(!$('editor').classList.contains('library-collapsed'));
+  narrowEditor.addEventListener('change', () => collapseLibrary(narrowEditor.matches));
+  collapseLibrary(narrowEditor.matches);
   const node = () => graph().nodes.find((n) => n.id === selected);
   const snapshot = () => {
     history.push(JSON.stringify(graph()));
@@ -139,7 +150,7 @@
     if (n.type === 'call_subflow') return graph().nodes.find(x => x.id === n.subflow_id)?.title || 'Выберите подцепочку справа';
     if (n.type === 'return') return 'Вернуться туда, откуда вызвана подцепочка';
     if (n.type === 'wait') return `Пауза: ${n.delay_value} ${waitUnits[n.delay_unit]}\nЗатем — следующий блок`;
-    if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}`;
+    if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}${n.reminder_enabled ? `\nНапомнить: ${n.reminder_delay_value} ${waitUnits[n.reminder_delay_unit]}` : ''}${n.allow_later ? '\nКнопка «Позже»' : ''}`;
     if (n.type === 'phone_condition') return n.phone_check_mode === 'any' ? 'Есть сохранённый телефон, в том числе из VK?' : 'Клиент уже оставил телефон боту?';
     if (n.type === 'set_variable') return `{${n.variable}} = ${n.value || '(пусто)'}`;
     if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
@@ -275,6 +286,9 @@
   function campaignSelect(n) {
     return `<label>Кампания<select data-field="campaign_id"><option value="">Выберите кампанию…</option>${campaigns.map((c) => `<option value="${c.id}" ${n.campaign_id === c.id ? "selected" : ""}>${e(c.title)}${c.enabled ? "" : " (выключена)"}</option>`).join("")}</select></label><p class="hint">Используются сообщение, файл и промокод выбранной кампании.</p>`;
   }
+  function contactReminderFields(n, prefix) {
+    return `<label>Через сколько напомнить<input type="number" data-field="${prefix}_delay_value" min="1" max="315360000" step="1" value="${e(n[prefix + '_delay_value'])}"></label><label>Единица времени<select data-field="${prefix}_delay_unit">${Object.entries({seconds: 'Секунды', minutes: 'Минуты', hours: 'Часы', days: 'Дни'}).map(([value, label]) => `<option value="${value}" ${n[prefix + '_delay_unit'] === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label>Текст напоминания<textarea data-field="${prefix}_text" maxlength="3500" placeholder="Пусто — стандартная просьба прислать контакт">${e(n[prefix + '_text'])}</textarea></label>`;
+  }
   function renderInspector() {
     if (!flow) return;
     const n = node();
@@ -305,6 +319,9 @@
     }
     if (n.type === 'contact') {
       html += `<label>Какой контакт запросить<select data-field="contact_type"><option value="phone" ${n.contact_type === 'phone' ? 'selected' : ''}>Телефон</option><option value="email" ${n.contact_type === 'email' ? 'selected' : ''}>Email</option></select></label><label class="check"><input type="checkbox" data-field="allow_skip" ${n.allow_skip ? 'checked' : ''}> Разрешить ответ «Пропустить»</label><label>Подсказка при неверном формате<textarea data-field="error_text" maxlength="500" placeholder="Пусто — стандартная подсказка бота">${e(n.error_text)}</textarea></label><p class="hint">Бот ждёт текстовый ответ и проверяет формат, но не принадлежность контакта. Телефон сразу попадает в карточку клиента; оба контакта сохраняются в ответах диалога. Это не подписка на рассылку.</p>`;
+      html += `<div class="divider"></div><h3>Если контакт не оставлен</h3><label class="check"><input type="checkbox" data-field="reminder_enabled" ${n.reminder_enabled ? 'checked' : ''}> Напомнить, если человек молчит</label>${n.reminder_enabled ? contactReminderFields(n, 'reminder') : ''}<label class="check"><input type="checkbox" data-field="allow_later" ${n.allow_later ? 'checked' : ''}> Добавить кнопку «Позже»</label>`;
+      if (n.allow_later) html += `<label>Ответ на «Позже»<textarea data-field="later_text" maxlength="3500" placeholder="Пусто — предложить прислать контакт в удобное время">${e(n.later_text)}</textarea></label><label class="check"><input type="checkbox" data-field="later_reminder_enabled" ${n.later_reminder_enabled ? 'checked' : ''}> Напомнить после «Позже»</label>${n.later_reminder_enabled ? contactReminderFields(n, 'later_reminder') : ''}`;
+      html += '<p class="hint">Каждый таймер отправляет одно напоминание и оставляет сбор контакта открытым. Неверный ответ не меняет срок. «Позже» заменяет прежний таймер; повторное нажатие отсчитывает срок заново. Если напоминание после «Позже» выключено, старое отменяется.</p><p class="hint">Корректный контакт отменяет напоминание и ведёт дальше. «Пропустить» тоже ведёт дальше, но без нового контакта; «Позже» остаётся в этом блоке. Для обязательного контакта выключите «Пропустить». В текстах доступны переменные, например {first_name}.</p><p class="hint">Срок: от 1 секунды до 3650 дней. Таймер переживает перезапуск. «Стоп», запрет сообщений, менеджер, публикация новой версии или пауза отменяют напоминания. После простоя отправка возможна при запуске сервера, если контакт ещё не получен.</p>';
     }
     if (n.type === 'phone_condition') {
       html += `<label>Какой телефон учитывать<select data-field="phone_check_mode"><option value="provided" ${n.phone_check_mode === 'provided' ? 'selected' : ''}>Оставленный боту</option><option value="any" ${n.phone_check_mode === 'any' ? 'selected' : ''}>Любой сохранённый, включая VK</option></select></label><p class="hint">Проверяет карточку клиента в текущем проекте, даже после «Меню». Блок «Телефон / email» сохраняет телефон сразу. Email, произвольная переменная и текст последнего сообщения не считаются телефоном. Проверка не подтверждает принадлежность номера и не меняет согласие на рассылку.</p><p class="hint">Например: «Да» → продолжить, «Нет» → запросить телефон. Данные из VK заново не запрашиваются.</p>`;
@@ -379,7 +396,7 @@
     )
       html += targetSelect(
         "next",
-        n.type === "call_subflow" ? "После возврата" : n.type === "question" ? "Любой другой ответ" : "Следующий блок",
+        n.type === "call_subflow" ? "После возврата" : n.type === "question" ? "Любой другой ответ" : n.type === 'contact' ? 'После получения контакта или «Пропустить»' : "Следующий блок",
         n.next,
       );
     if (n.type !== "start")
@@ -394,7 +411,7 @@
           let value = input.type === 'checkbox' ? input.checked : input.value;
           if (input.dataset.field === "campaign_id")
             value = value ? Number(value) : null;
-          if (input.dataset.field === 'delay_value') value = Number(value);
+          if (input.dataset.field.endsWith('delay_value')) value = Number(value);
           if (['pass_variables', 'return_variables'].includes(input.dataset.field)) value = [...new Set(value.split(/[,\s]+/).filter(Boolean))];
           if (input.dataset.field === 'contact_type') {
             const previous = n.contact_type;
@@ -406,6 +423,7 @@
           markDirty();
           renderNodes();
           if (
+            ['reminder_enabled', 'allow_later', 'later_reminder_enabled'].includes(input.dataset.field) ||
             input.tagName === "SELECT" &&
             (['condition', 'comparison', 'contact_type'].includes(input.dataset.field) ||
               input.dataset.field.endsWith(".kind"))
@@ -663,6 +681,7 @@
         graph().nodes.push(n);
         selected = n.id;
         changed();
+        if (narrowEditor.matches) collapseLibrary(true);
       }),
   );
   $("new-flow").onclick = create;
@@ -887,15 +906,16 @@
           }
         }
       }
-      if (previewState.handoff) buttons.replaceChildren();
+      if (previewState.handoff || !previewState.node_id) buttons.replaceChildren();
       if (previewState.waiting) {
-        buttons.replaceChildren();
+        const contactReminder = previewState.waiting.kind === 'contact';
+        if (!contactReminder) buttons.replaceChildren();
         const hint = document.createElement('div');
         hint.className = 'hint';
-        hint.textContent = `Ожидание: ${previewState.waiting.seconds} сек. В VK продолжится автоматически; здесь можно пропустить паузу.`;
+        hint.textContent = contactReminder ? `Напоминание через ${previewState.waiting.seconds} сек. Контакт можно прислать сейчас или после напоминания.` : `Ожидание: ${previewState.waiting.seconds} сек. В VK продолжится автоматически; здесь можно пропустить паузу.`;
         const skip = document.createElement('button');
         skip.id = 'skip-preview-wait';
-        skip.textContent = previewState.waiting.kind === 'wait_reply' ? 'Ответ не получен — время вышло' : 'Пропустить ожидание';
+        skip.textContent = contactReminder ? 'Отправить напоминание сейчас' : previewState.waiting.kind === 'wait_reply' ? 'Ответ не получен — время вышло' : 'Пропустить ожидание';
         skip.onclick = () => {
           bubble('Время ожидания прошло', false, 'Только симуляция — реальных отправок нет.');
           previewStep('', {}, false, true);
