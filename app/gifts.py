@@ -319,8 +319,23 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
             .order_by(PendingGift.created_at, PendingGift.id)
             .first()
         )
-    if gift is None and not explicit:
-        return False  # Ordinary Start still starts the configured dialog.
+    if gift is None:
+        if not explicit:
+            return False  # Ordinary Start still starts the configured dialog.
+        # Gift commands belong only to projects that actually offer gifts.
+        # A chat-only project must use its own scenarios/fallback, even if a
+        # customer types an old command or clicks a previously sent gift button.
+        offers_gifts = (
+            session.query(Campaign.id)
+            .filter(
+                Campaign.enabled.is_(True),
+                Campaign.is_deleted.is_(False),
+                Campaign.delivery_mode.in_(("direct", "chat_invite")),
+            )
+            .first()
+        )
+        if offers_gifts is None:
+            return False
     event.kind = "gift_join" if automatic else "gift"
     event.text = str(message.get("text", ""))[:4000]
     event.gift_id = gift.id if gift else None

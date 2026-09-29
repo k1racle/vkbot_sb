@@ -545,6 +545,10 @@ async def handle_message(payload, *, preferences_only=False):
             # It does not reset scenario progress or a manager's ownership.
             if await handle_gift_request(session, event, message, incoming):
                 return
+            if incoming.get("action") == "claim_gift":
+                # No gift context in this project: treat the old button label
+                # as ordinary text, not as a stale scenario-button payload.
+                incoming = {}
             start_button = incoming == {"command": "start"}
             if start_button:
                 incoming = {}
