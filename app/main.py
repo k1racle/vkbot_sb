@@ -368,6 +368,11 @@ async def update_chat_settings(
                 "admin_test_user_id": admin_test_user_id.strip(),
             },
         )
+        if not chat_enabled:
+            from .waits import cancel_waits
+
+            cancel_waits(session, "Общение с ботом выключено")
+            session.commit()
     return RedirectResponse(
         "/admin?section=chat&saved=1", status_code=status.HTTP_303_SEE_OTHER
     )
@@ -698,12 +703,22 @@ async def vk_callback(request: Request) -> str:
         if payload.get("group_id") == settings.vk_group_id:
             obj = payload.get("object")
             user_id = obj.get("user_id") if isinstance(obj, dict) else None
-            with SessionLocal() as session:
-                client = clients.ensure_client(session, user_id)
-                if client:
+            if type(user_id) is not int or not 0 < user_id < 2_000_000_000:
+                return "ok"
+            async with user_lock(user_id), CALLBACK_SLOTS:
+                from .dialog import lock_conversation
+
+                with SessionLocal() as session:
+                    lock_conversation(session, user_id)
+                    client = clients.ensure_client(session, user_id)
                     client.messages_allowed = payload["type"] == "message_allow"
                     if payload["type"] == "message_deny":
                         client.unsubscribed = True
+                        from .waits import cancel_waits
+
+                        cancel_waits(
+                            session, "Клиент запретил сообщения", user_id=user_id
+                        )
                     session.commit()
         return "ok"
     comment = normalize_comment(payload, settings.vk_group_id)

@@ -13,7 +13,17 @@
     set_variable: ["Записать переменную", "pencil"],
     variable_condition: ["Проверить ответ", "git-branch"],
     random: ["Случайный ответ", "messages-square"],
+    wait: ["Ожидание", "clock"],
+    wait_reply: ["Ждать ответ", "messages-square"],
+    schedule: ["Расписание", "clock"],
+    tag: ["Изменить метку", "tag"],
+    tag_condition: ["Проверить метку", "git-branch"],
+    subflow: ["Вход подцепочки", "workflow"],
+    call_subflow: ["Вызвать подцепочку", "workflow"],
+    return: ["Возврат", "arrow-left"],
   };
+  const blockDefaults = { tag: '', tag_action: 'add', timezone: 'Europe/Moscow', weekdays: [0, 1, 2, 3, 4], time_from: '09:00', time_to: '18:00', date_from: '', date_to: '', subflow_id: '', pass_variables: [], return_variables: [] };
+  const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   let flows = [],
     campaigns = [],
     media = [],
@@ -77,12 +87,14 @@
     }
   }
   function exits(n) {
-    if (["condition", "variable_condition"].includes(n.type))
+    if (n.type === 'wait_reply') return [{key: 'yes', label: 'Ответил', target: n.yes}, {key: 'no', label: 'Время вышло', target: n.no}];
+    if (n.type === 'call_subflow') return [{key: 'subflow_id', label: 'Подцепочка', target: n.subflow_id}, {key: 'next', label: 'После возврата', target: n.next}];
+    if (["condition", "variable_condition", "schedule", "tag_condition"].includes(n.type))
       return [
         { key: "yes", label: "Да", target: n.yes },
         { key: "no", label: "Нет", target: n.no },
       ];
-    if (["end", "operator"].includes(n.type)) return [];
+    if (["end", "operator", "return"].includes(n.type)) return [];
     if (n.type === "message" && n.buttons.length)
       return n.buttons.map((b, i) => ({
         key: `buttons.${i}.target`,
@@ -118,6 +130,14 @@
     drawEdges();
   }
   function summary(n) {
+    if (n.type === 'wait_reply') return `Ждать ответ: ${n.delay_value} ${waitUnits[n.delay_unit]}\nОтвет → {${n.variable}}`;
+    if (n.type === 'schedule') return `${n.weekdays.map(d => dayNames[d]).join(', ')} · ${n.time_from}–${n.time_to}\n${n.timezone}`;
+    if (n.type === 'tag') return `${n.tag_action === 'add' ? 'Добавить' : 'Снять'} метку: ${n.tag || 'укажите справа'}`;
+    if (n.type === 'tag_condition') return `Есть метка «${n.tag || 'укажите справа'}»?`;
+    if (n.type === 'subflow') return 'Повторно используемая цепочка. Вход — через блок вызова.';
+    if (n.type === 'call_subflow') return graph().nodes.find(x => x.id === n.subflow_id)?.title || 'Выберите подцепочку справа';
+    if (n.type === 'return') return 'Вернуться туда, откуда вызвана подцепочка';
+    if (n.type === 'wait') return `Пауза: ${n.delay_value} ${waitUnits[n.delay_unit]}\nЗатем — следующий блок`;
     if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}`;
     if (n.type === 'set_variable') return `{${n.variable}} = ${n.value || '(пусто)'}`;
     if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
@@ -128,6 +148,7 @@
     return n.text || 'Нажмите, чтобы настроить';
   }
   const comparisonNames = { equals: 'равно', not_equals: 'не равно', contains: 'содержит', empty: 'не заполнено', not_empty: 'заполнено', gt: 'больше', gte: 'больше или равно', lt: 'меньше', lte: 'меньше или равно' };
+  const waitUnits = { seconds: 'сек.', minutes: 'мин.', hours: 'ч.', days: 'дн.' };
   function renderNodes() {
     if (!flow) return;
     const width = Math.max(1800, ...graph().nodes.map((n) => n.x + 400)),
@@ -263,11 +284,21 @@
     let html = `<span class="eyebrow">НАСТРОЙКИ БЛОКА</span><h3>${Admin.icon(kinds[n.type][1])} ${kinds[n.type][0]}</h3><label>Название блока<input data-field="title" value="${e(n.title)}" maxlength="120"></label>`;
     if (n.type === "start")
       html += `<label>Название сценария<input id="scenario-title" value="${e(flow.title)}" maxlength="120"></label><p class="hint">Запускается на первое сообщение и команду «меню». Активен один входной сценарий.</p>`;
-    if (["message", "question", "contact", "operator", "end"].includes(n.type))
+    if (['wait', 'wait_reply'].includes(n.type)) {
+      html += `<label>Сколько ждать<input type="number" data-field="delay_value" min="1" max="315360000" step="1" value="${e(n.delay_value)}"></label><label>Единица времени<select data-field="delay_unit">${Object.entries({seconds: 'Секунды', minutes: 'Минуты', hours: 'Часы', days: 'Дни'}).map(([value, label]) => `<option value="${value}" ${n.delay_unit === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p class="hint">Например: 3 часа. От 1 секунды до 3650 дней. Таймер сохраняется при перезапуске. Сообщение добавьте отдельным следующим блоком.</p><p class="hint">${n.type === 'wait_reply' ? 'Текстовый ответ до срока выбирает ветку «Ответил». Без ответа сработает «Время вышло».' : 'Обычный ответ клиента не сокращает паузу.'} «Меню» начинает диалог заново. «Стоп», запрет сообщений и передача менеджеру отменяют ожидание.</p><p class="hint">Публикация новой версии, приостановка сценария, проекта или раздела «Общение» отменяет старые таймеры. При недоступности сервера продолжение произойдёт после его запуска, не раньше срока.</p>`;
+    }
+    if (n.type === 'wait_reply') html += '<p class="notice">Задаёт вопрос и ждёт текстовый ответ до срока. Успел — ветка «Ответил», не успел — «Время вышло». Вложения без текста и старые кнопки не считаются ответом. Срок не продлевается.</p>';
+    if (['tag', 'tag_condition'].includes(n.type)) html += `<label>Метка клиента<input data-field="tag" value="${e(n.tag)}" maxlength="40" placeholder="интересуется доставкой"></label><p class="hint">Без учёта регистра. Метки сохраняются у клиента в этой группе даже после «Меню». Не меняют разрешения на рассылки.</p>`;
+    if (n.type === 'tag') html += `<label>Действие<select data-field="tag_action"><option value="add" ${n.tag_action === 'add' ? 'selected' : ''}>Добавить метку</option><option value="remove" ${n.tag_action === 'remove' ? 'selected' : ''}>Снять метку</option></select></label>`;
+    if (n.type === 'schedule') html += `<fieldset class="schedule-days"><legend>Дни недели</legend>${dayNames.map((day, index) => `<label class="check"><input type="checkbox" data-weekday="${index}" ${n.weekdays.includes(index) ? 'checked' : ''}>${day}</label>`).join('')}</fieldset><label>С начала дня, ЧЧ:ММ<input data-field="time_from" value="${e(n.time_from)}" maxlength="5" placeholder="09:00"></label><label>До, ЧЧ:ММ<input data-field="time_to" value="${e(n.time_to)}" maxlength="5" placeholder="18:00"></label><label>Часовой пояс<input data-field="timezone" value="${e(n.timezone)}" list="flow-timezones" maxlength="100"></label><datalist id="flow-timezones"><option value="Europe/Moscow"><option value="Asia/Yekaterinburg"><option value="Asia/Novosibirsk"><option value="Asia/Vladivostok"><option value="UTC"></datalist><label>С даты (необязательно)<input type="date" data-field="date_from" value="${e(n.date_from)}"></label><label>По дату включительно<input type="date" data-field="date_to" value="${e(n.date_to)}"></label><p class="hint">Проверяет текущее время и сразу выбирает Да/Нет, не ждёт открытия. 00:00–24:00 — весь день. 22:00–06:00 — ночная смена; день недели и даты относятся к началу смены. Праздники автоматически не учитываются.</p>`;
+    if (n.type === 'subflow') html += '<p class="hint">Задайте название, например «Доставка». Соедините с её блоками, в конце поставьте «Возврат». Из основной цепочки используйте «Вызвать подцепочку», а не обычную прямую стрелку.</p>';
+    if (n.type === 'return') html += '<p class="hint">Завершает подцепочку и продолжает цепочку вызывающего блока. Возвращаются только переменные, выбранные в блоке вызова.</p>';
+    if (n.type === 'call_subflow') html += `<label>Подцепочка<select data-field="subflow_id"><option value="">Выберите вход…</option>${graph().nodes.filter(x => x.type === 'subflow').map(x => `<option value="${e(x.id)}" ${n.subflow_id === x.id ? 'selected' : ''}>${e(x.title)}</option>`).join('')}</select></label><label>Передать переменные<input data-field="pass_variables" value="${e(n.pass_variables.join(', '))}" placeholder="city, size"></label><label>Вернуть переменные<input data-field="return_variables" value="${e(n.return_variables.join(', '))}" placeholder="delivery_cost"></label><p class="hint">Имена через запятую. Имя клиента и последнее сообщение доступны всегда; остальные ответы передаются только по этому списку. Метки общие для клиента. Вложенность до 5, вызов по кругу запрещён. Подцепочки находятся в этом же сценарии.</p>`;
+    if (["message", "question", "contact", "operator", "end", "wait_reply"].includes(n.type))
       html += `<label>Сообщение<textarea data-field="text" maxlength="3500" placeholder="Что скажет бот?">${e(n.text)}</textarea></label><div class="hint">Имя: <code>{first_name}</code>. Ответы клиента: <code>{answer}</code> или имя вашей переменной.</div>`;
-    if (["message", "question", "contact", "random"].includes(n.type))
+    if (["message", "question", "contact", "random", "wait_reply"].includes(n.type))
       html += `<label class="upload-box">Вложение<input id="block-file" type="file" accept="image/*,video/*,audio/*,.pdf,.zip,.txt"><span class="hint">До 50 МБ. Видео и аудио отправляются как файлы.</span></label>${n.media_id ? `<div class="hint">${Admin.icon("paperclip")} ${e(media.find((m) => m.id === n.media_id)?.filename || "Файл")} <button class="btn ghost small" id="remove-media">Убрать</button></div>` : ""}`;
-    if (['contact', 'set_variable', 'variable_condition'].includes(n.type)) {
+    if (['contact', 'set_variable', 'variable_condition', 'wait_reply'].includes(n.type)) {
       html += `<label>${n.type === 'variable_condition' ? 'Какую переменную проверить' : 'Имя переменной'}<input data-field="variable" value="${e(n.variable)}" pattern="[a-z][a-z0-9_]*" maxlength="32" placeholder="phone, email, interest"></label><p class="hint">Латинские буквы, цифры и _. В сообщении используйте <code>{${e(n.variable)}}</code>.</p>`;
     }
     if (n.type === 'contact') {
@@ -332,17 +363,18 @@
     if (n.type === "operator")
       html +=
         '<p class="hint">Бот приостановит ответы клиенту и уведомит всех менеджеров из раздела «Общение». Первый ответивший или нажавший «Взять в работу» станет ответственным. Переписка продолжается в VK.</p>';
-    if (["condition", "variable_condition"].includes(n.type))
+    if (n.type === 'wait_reply') html += targetSelect('yes', 'Если ответил вовремя', n.yes) + targetSelect('no', 'Если время вышло', n.no);
+    else if (["condition", "variable_condition", "schedule", "tag_condition"].includes(n.type))
       html +=
         targetSelect("yes", "Если да", n.yes) +
         targetSelect("no", "Если нет", n.no);
     else if (
-      !["operator", "end"].includes(n.type) &&
+      !["operator", "end", "return"].includes(n.type) &&
       !(n.type === "message" && n.buttons.length)
     )
       html += targetSelect(
         "next",
-        n.type === "question" ? "Любой другой ответ" : "Следующий блок",
+        n.type === "call_subflow" ? "После возврата" : n.type === "question" ? "Любой другой ответ" : "Следующий блок",
         n.next,
       );
     if (n.type !== "start")
@@ -357,6 +389,8 @@
           let value = input.type === 'checkbox' ? input.checked : input.value;
           if (input.dataset.field === "campaign_id")
             value = value ? Number(value) : null;
+          if (input.dataset.field === 'delay_value') value = Number(value);
+          if (['pass_variables', 'return_variables'].includes(input.dataset.field)) value = [...new Set(value.split(/[,\s]+/).filter(Boolean))];
           if (input.dataset.field === 'contact_type') {
             const previous = n.contact_type;
             if (n.variable === previous) n.variable = value;
@@ -374,6 +408,14 @@
             renderInspector();
         });
       });
+    $('block-inspector').querySelectorAll('[data-weekday]').forEach(input => {
+      input.onchange = () => {
+        snapshot();
+        const days = new Set(n.weekdays), day = Number(input.dataset.weekday);
+        input.checked ? days.add(day) : days.delete(day);
+        n.weekdays = [...days].sort(); markDirty(); renderNodes();
+      };
+    });
     if ($("scenario-title"))
       $("scenario-title").oninput = (ev) => {
         flow.title = ev.target.value;
@@ -511,6 +553,7 @@
   }
   function selectFlow(id) {
     flow = structuredClone(flows.find((f) => f.id === Number(id)));
+    flow.graph.nodes = flow.graph.nodes.map(n => ({...structuredClone(blockDefaults), ...n}));
     selected = flow.graph.nodes.find((n) => n.type === "start")?.id;
     dirty = false;
     pending = null;
@@ -578,6 +621,7 @@
         snapshot();
         const c = $("flow-canvas");
         const n = {
+          ...structuredClone(blockDefaults),
           id: "n" + crypto.randomUUID().replaceAll("-", ""),
           type: b.dataset.add,
           title: kinds[b.dataset.add][0],
@@ -603,11 +647,14 @@
           comparison: 'equals',
           value: '',
           variants: b.dataset.add === 'random' ? ['Спасибо за ваш интерес, {first_name}!', 'Рады помочь, {first_name}!'] : [],
+          delay_value: 3,
+          delay_unit: 'hours',
         };
         if (n.type === 'contact') {
           n.variable = 'phone';
           n.text = 'Оставьте телефон для связи, например +7 999 123-45-67.';
         }
+        if (n.type === 'wait_reply') n.text = 'Подскажите, нужна ли помощь с выбором?';
         graph().nodes.push(n);
         selected = n.id;
         changed();
@@ -639,6 +686,7 @@
     flow &&
     action(async () => {
       if (!(await validate())) return;
+      if (flows.some(f => f.active) && !confirm('Опубликовать сценарий? Незавершённые ожидания текущего активного сценария будут отменены. Новые диалоги пойдут по новой версии.')) return;
       await save();
       const result = await Admin.api(`/scenarios/${flow.id}/publish`, "POST", {
         revision: flow.revision,
@@ -657,6 +705,7 @@
   $("pause-flow").onclick = () =>
     flow &&
     action(async () => {
+      if (!confirm('Приостановить сценарий? Его текущие ожидания будут отменены и не возобновятся после включения.')) return;
       const result = await Admin.api(`/scenarios/${flow.id}/pause`, "POST", {
         revision: flow.revision,
       });
@@ -676,6 +725,7 @@
       flow = null; dirty = false; selected = null; previewState = {};
       if (flows.length) selectFlow(flows[0].id);
       else {
+        toggleFullscreen(false);
         $('editor').hidden = true;
         $('flow-empty').hidden = false;
         document.querySelector('.flow-toolbar').hidden = true;
@@ -725,6 +775,8 @@
   });
   window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
+      if ($('preview-dialog').open) return;
+      if ($('flow-app').classList.contains('is-fullscreen')) toggleFullscreen(false);
       pending = null;
       if (flow) renderNodes();
     }
@@ -748,6 +800,17 @@
         });
     }
   });
+  function toggleFullscreen(expanded) {
+    $('flow-app').classList.toggle('is-fullscreen', expanded);
+    document.body.classList.toggle('flow-fullscreen', expanded);
+    document.querySelectorAll('.sidebar, .project-topbar, .skip-link').forEach(el => { el.inert = expanded; });
+    const button = $('fullscreen-flow');
+    button.setAttribute('aria-pressed', String(expanded));
+    button.innerHTML = `${Admin.icon(expanded ? 'minimize' : 'maximize')} ${expanded ? 'Выйти · Esc' : 'На весь экран'}`;
+    requestAnimationFrame(drawEdges);
+    button.focus();
+  }
+  $('fullscreen-flow').onclick = () => toggleFullscreen(!$('flow-app').classList.contains('is-fullscreen'));
   function bubble(message, isUser = false, note = "") {
     const el = document.createElement("div");
     el.className = "bubble" + (isUser ? " user" : "");
@@ -761,7 +824,7 @@
     $("preview-messages").scrollTop = $("preview-messages").scrollHeight;
   }
   let previewBusy = false;
-  async function previewStep(text = "", payload = {}, restart = false) {
+  async function previewStep(text = "", payload = {}, restart = false, resumeWait = false) {
     if (previewBusy) return;
     previewBusy = true;
     const buttons = $("preview-buttons");
@@ -776,8 +839,13 @@
         payload,
         member: $("preview-member").checked,
         restart,
+        resume_wait: resumeWait,
+        simulated_at: $('preview-clock').value ? new Date($('preview-clock').value + 'Z').toISOString() : null,
+        tags: $('preview-tags').value.split(',').map(s => s.trim()).filter(Boolean),
       });
       previewState = result.state;
+      if (previewState.clock) $('preview-clock').value = new Date(previewState.clock).toISOString().slice(0, 19);
+      $('preview-state').textContent = `Метки: ${(previewState.tags || []).join(', ') || 'нет'} · Вложенность: ${(previewState.stack || []).length}`;
       for (const m of result.messages) {
         bubble(
           m.text,
@@ -811,6 +879,20 @@
         }
       }
       if (previewState.handoff) buttons.replaceChildren();
+      if (previewState.waiting) {
+        buttons.replaceChildren();
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = `Ожидание: ${previewState.waiting.seconds} сек. В VK продолжится автоматически; здесь можно пропустить паузу.`;
+        const skip = document.createElement('button');
+        skip.id = 'skip-preview-wait';
+        skip.textContent = previewState.waiting.kind === 'wait_reply' ? 'Ответ не получен — время вышло' : 'Пропустить ожидание';
+        skip.onclick = () => {
+          bubble('Время ожидания прошло', false, 'Только симуляция — реальных отправок нет.');
+          previewStep('', {}, false, true);
+        };
+        buttons.append(hint, skip);
+      }
     } catch (err) {
       bubble(err.message, false, "Не удалось выполнить этот шаг.");
     } finally {

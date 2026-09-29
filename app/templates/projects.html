@@ -48,7 +48,7 @@
             {% if item.has_video_token %}<label class="check"><input name="clear_video_token" type="checkbox" value="1">Удалить токен для видео</label>{% endif %}
             <p class="hint">Без токена приглашение отправляется в разрешённую личку. Если она закрыта, подарок остаётся доступен после перехода в чат; ссылку можно разместить в описании видео. Уже обработанные комментарии автоматически не повторяются.</p>
           </div>
-          <label class="switch-row project-enable"><span><strong>Включить проект</strong><small>Для включения нужны токен, секрет Callback API и код подтверждения. Выключение приостанавливает обработку и отправку сообщений.</small></span><input name="enabled" type="checkbox" value="1" {% if item.enabled %}checked{% endif %}></label>
+          <label class="switch-row project-enable"><span><strong>Включить проект</strong><small>Для включения нужны токен, секрет Callback API и код подтверждения. Выключение приостанавливает обработку и отправку сообщений, а текущие ожидания сценариев отменяет.</small></span><input name="enabled" type="checkbox" value="1" {% if item.enabled %}checked{% endif %}></label>
           <div class="form-footer"><a href="/p/{{ item.id }}/admin?section=settings">К настройкам бота</a><button class="btn" type="submit">{{ icon("save") }} Сохранить проект</button></div>
         </form>
       </details>

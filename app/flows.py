@@ -7,6 +7,13 @@ from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
+from .flow_rules import (
+    MAX_CALL_DEPTH,
+    in_schedule,
+    normalize_tag,
+    schedule_errors,
+    subflow_errors,
+)
 
 NodeId = str
 KINDS = {
@@ -21,7 +28,17 @@ KINDS = {
     "set_variable",
     "variable_condition",
     "random",
+    "wait",
+    "wait_reply",
+    "schedule",
+    "tag",
+    "tag_condition",
+    "subflow",
+    "call_subflow",
+    "return",
 }
+WAIT_UNITS = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86400}
+MAX_WAIT_SECONDS = 3650 * 86400
 VARIABLE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 RESERVED_VARIABLES = {
     "first_name",
@@ -60,6 +77,14 @@ class Node(BaseModel):
         "set_variable",
         "variable_condition",
         "random",
+        "wait",
+        "wait_reply",
+        "schedule",
+        "tag",
+        "tag_condition",
+        "subflow",
+        "call_subflow",
+        "return",
     ]
     title: str = Field(default="Блок", max_length=120)
     x: float = Field(default=80, ge=0, le=10000, allow_inf_nan=False)
@@ -93,6 +118,25 @@ class Node(BaseModel):
     variants: list[Annotated[str, Field(max_length=3500)]] = Field(
         default_factory=list, max_length=10
     )
+    delay_value: int = Field(default=3, ge=1, le=MAX_WAIT_SECONDS, strict=True)
+    delay_unit: Literal["seconds", "minutes", "hours", "days"] = "hours"
+    tag: str = Field(default="", max_length=40)
+    tag_action: Literal["add", "remove"] = "add"
+    timezone: str = Field(default="Europe/Moscow", max_length=100)
+    weekdays: list[Annotated[int, Field(ge=0, le=6, strict=True)]] = Field(
+        default_factory=lambda: [0, 1, 2, 3, 4], max_length=7
+    )
+    time_from: str = Field(default="09:00", max_length=5)
+    time_to: str = Field(default="18:00", max_length=5)
+    date_from: str = Field(default="", max_length=10)
+    date_to: str = Field(default="", max_length=10)
+    subflow_id: str = Field(default="", max_length=64)
+    pass_variables: list[Annotated[str, Field(max_length=32)]] = Field(
+        default_factory=list, max_length=32
+    )
+    return_variables: list[Annotated[str, Field(max_length=32)]] = Field(
+        default_factory=list, max_length=32
+    )
 
 
 class Graph(BaseModel):
@@ -101,9 +145,13 @@ class Graph(BaseModel):
 
 def outputs(node):
     kind = node["type"]
-    if kind in {"condition", "variable_condition"}:
+    if kind == "wait_reply":
+        return [("Ответил", node["yes"]), ("Время вышло", node["no"])]
+    if kind == "call_subflow":
+        return [("Подцепочка", node["subflow_id"]), ("После возврата", node["next"])]
+    if kind in {"condition", "variable_condition", "schedule", "tag_condition"}:
         return [("Да", node["yes"]), ("Нет", node["no"])]
-    if kind in {"end", "operator"}:
+    if kind in {"end", "operator", "return"}:
         return []
     if kind == "message" and node["buttons"]:
         return [
@@ -126,18 +174,37 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
         errors.append("У блоков повторяются идентификаторы.")
     for n in nodes:
         prefix = n["title"] or n["id"]
+        if n["type"] in {"wait", "wait_reply"} and wait_seconds(n) > MAX_WAIT_SECONDS:
+            errors.append(f"{prefix}: ожидание не должно превышать 3650 дней (10 лет).")
         if (
-            n["type"] in {"message", "question", "contact"}
+            n["type"] in {"message", "question", "contact", "wait_reply"}
             and not n["text"].strip()
             and not n["media_id"]
         ):
             errors.append(f"{prefix}: добавьте текст или файл.")
-        if n["type"] in {"question", "contact", "set_variable"} and (
+        if n["type"] in {"question", "contact", "set_variable", "wait_reply"} and (
             not VARIABLE.fullmatch(n["variable"]) or n["variable"] in RESERVED_VARIABLES
         ):
             errors.append(
                 f"{prefix}: имя переменной — латиница, цифры и _, например size; системные имена зарезервированы."
             )
+        if n["type"] in {"tag", "tag_condition"}:
+            try:
+                normalize_tag(n["tag"])
+            except ValueError as error:
+                errors.append(f"{prefix}: {error}")
+        if n["type"] == "schedule":
+            errors.extend(f"{prefix}: {message}" for message in schedule_errors(n))
+        if n["type"] == "call_subflow":
+            for field in ("pass_variables", "return_variables"):
+                if any(
+                    not VARIABLE.fullmatch(v)
+                    or (field == "return_variables" and v in RESERVED_VARIABLES)
+                    for v in n[field]
+                ):
+                    errors.append(
+                        f"{prefix}: проверьте имена передаваемых переменных; служебные значения возвращать нельзя."
+                    )
         if n["type"] == "variable_condition":
             if not VARIABLE.fullmatch(n["variable"]):
                 errors.append(
@@ -215,13 +282,15 @@ def validate_graph(graph: dict, campaign_ids=(), media_ids=()) -> list[str]:
         ):
             return False
         visiting.add(node_id)
-        cycle = any(auto_cycle(t) for _, t in outputs(n))
+        edges = [("Время вышло", n["no"])] if n["type"] == "wait_reply" else outputs(n)
+        cycle = any(auto_cycle(t) for _, t in edges)
         visiting.remove(node_id)
         done.add(node_id)
         return cycle
 
     if any(auto_cycle(n["id"]) for n in nodes):
         errors.append("Обнаружен бесконечный цикл без ожидания ответа клиента.")
+    errors.extend(subflow_errors(nodes, outputs))
     return list(dict.fromkeys(errors))
 
 
@@ -351,17 +420,57 @@ def keyboard_for(node, version, nonce):
     return {"one_time": False, "buttons": rows}
 
 
-async def advance(graph, state, text, payload, port, *, restart=False):
+def wait_seconds(node):
+    return node["delay_value"] * WAIT_UNITS[node["delay_unit"]]
+
+
+async def advance(
+    graph, state, text, payload, port, *, restart=False, resume_wait=False
+):
     """Mutates a serializable state; all external effects go through port."""
     nodes = {n["id"]: n for n in graph["nodes"]}
     if state.get("handoff") and not restart:
         return
     variables = state.setdefault("variables", {})
-    variables["last_message"] = text
+    if not resume_wait:
+        variables["last_message"] = text
     current = nodes.get(state.get("node_id", ""))
     if restart or not current:
         state["handoff"] = False
+        state.pop("waiting", None)
+        state["stack"] = []
         current = next(n for n in graph["nodes"] if n["type"] == "start")
+    elif current["type"] == "wait_reply":
+        decision = (
+            "timeout"
+            if resume_wait
+            else await port.reply_decision(current, state, text, payload)
+        )
+        if decision not in {"answer", "timeout"}:
+            if decision == "cancelled":
+                state["node_id"], state["stack"] = "", []
+                state.pop("waiting", None)
+                await port.emit(
+                    "Ожидание отменено. Напишите «меню», чтобы начать заново."
+                )
+            elif decision == "expired":
+                await port.emit(
+                    "Время для ответа уже вышло. Бот продолжит сценарий автоматически."
+                )
+            else:
+                await port.emit(
+                    "Пожалуйста, ответьте текстом. Время ожидания не продлевается."
+                )
+            return
+        state.pop("waiting", None)
+        if decision == "answer":
+            variables[current["variable"]] = text[:1000]
+        current = nodes[current["yes"] if decision == "answer" else current["no"]]
+    elif current["type"] == "wait":
+        if not resume_wait:
+            return  # Incoming text/buttons never skip or restart a timer.
+        state.pop("waiting", None)
+        current = nodes[current["next"]]
     elif payload:
         valid = (
             current["type"] == "message"
@@ -434,6 +543,66 @@ async def advance(graph, state, text, payload, port, *, restart=False):
     for step in range(100):
         state["node_id"] = current["id"]
         kind = current["type"]
+        if kind == "call_subflow":
+            stack = state.setdefault("stack", [])
+            if len(stack) >= MAX_CALL_DEPTH:
+                raise ValueError("Превышена вложенность подцепочек")
+            stack.append(
+                {
+                    "return_to": current["next"],
+                    "variables": dict(variables),
+                    "exports": current["return_variables"],
+                }
+            )
+            names = {
+                *current["pass_variables"],
+                "first_name",
+                "user_name",
+                "last_message",
+            }
+            state["variables"] = variables = {
+                k: v for k, v in variables.items() if k in names
+            }
+            current = nodes[current["subflow_id"]]
+            continue
+        if kind == "return":
+            stack = state.setdefault("stack", [])
+            if not stack:
+                raise ValueError("Возврат без вызова подцепочки")
+            frame = stack.pop()
+            exported = {k: variables[k] for k in frame["exports"] if k in variables}
+            last_message = variables.get("last_message", "")
+            state["variables"] = variables = {
+                k: v for k, v in frame["variables"].items() if k not in frame["exports"]
+            }
+            variables.update(exported)
+            variables["last_message"] = last_message
+            current = nodes[frame["return_to"]]
+            continue
+        if kind == "tag":
+            await port.change_tag(normalize_tag(current["tag"]), current["tag_action"])
+        elif kind == "tag_condition":
+            result = await port.has_tag(normalize_tag(current["tag"]))
+            current = nodes[current["yes"] if result else current["no"]]
+            continue
+        elif kind == "schedule":
+            result = in_schedule(current, port.now())
+            current = nodes[current["yes"] if result else current["no"]]
+            continue
+        if kind in {"wait", "wait_reply"}:
+            if kind == "wait_reply":
+                variables.pop(current["variable"], None)
+                await port.emit(
+                    render(current["text"], variables),
+                    media_id=current["media_id"],
+                    keyboard={"one_time": False, "buttons": []},
+                )
+            state["waiting"] = {
+                "node_id": current["id"],
+                "seconds": wait_seconds(current),
+                "kind": kind,
+            }
+            return
         if kind == "set_variable":
             variables[current["variable"]] = render(current["value"], variables)[:1000]
             current = nodes[current["next"]]
@@ -486,8 +655,11 @@ async def advance(graph, state, text, payload, port, *, restart=False):
         elif kind == "promo":
             await port.promo(current["campaign_id"], variables)
         elif kind == "operator":
+            if hasattr(port, "sync_variables"):
+                await port.sync_variables(variables)
             await port.handoff(render(current["text"], variables))
             state["handoff"] = True
+            state["stack"] = []
             return
         elif kind == "end":
             if current["text"].strip():
@@ -496,6 +668,7 @@ async def advance(graph, state, text, payload, port, *, restart=False):
                     keyboard={"one_time": False, "buttons": []},
                 )
             state["node_id"] = ""
+            state["stack"] = []
             return
         current = nodes[current["next"]]
     raise ValueError("Слишком много шагов сценария без ответа пользователя")

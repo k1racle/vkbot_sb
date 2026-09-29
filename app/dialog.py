@@ -22,12 +22,15 @@ from .db import (
     PendingGift,
     PromoDelivery,
     Scenario,
+    ScenarioWait,
     SessionLocal,
     read_settings,
 )
 from .flows import advance, matches, render
+from .flow_rules import MAX_TAGS
 from .gifts import delivered, handle_gift_request
 from .operators import configured_operators, reset_handoff
+from .waits import cancel_waits, schedule_wait
 
 logger = logging.getLogger(__name__)
 _locks = weakref.WeakValueDictionary()
@@ -63,7 +66,7 @@ def numeric_id(value):
         return 0
 
 
-def lock_conversation(session, user_id):
+def lock_conversation(session, user_id, *, wait=True):
     if session.bind.dialect.name == "postgresql":
         from .projects import current_project
 
@@ -76,7 +79,12 @@ def lock_conversation(session, user_id):
             "big",
             signed=True,
         )
+        if not wait:
+            return session.execute(
+                sql_text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}
+            ).scalar()
         session.execute(sql_text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    return True
 
 
 class LivePort:
@@ -93,6 +101,55 @@ class LivePort:
 
     def nonce(self, step):
         return hashlib.sha256(f"{self.event_key}:{step}".encode()).hexdigest()[:16]
+
+    def now(self):
+        return clients.now().replace(tzinfo=timezone.utc)
+
+    async def sync_variables(self, variables):
+        self.session.get(Conversation, self.user_id).variables = dict(variables)
+
+    async def change_tag(self, tag, action):
+        client = clients.ensure_client(self.session, self.user_id)
+        tags = set(client.tags or [])
+        if action == "add":
+            tags.add(tag)
+        else:
+            tags.discard(tag)
+        if len(tags) > MAX_TAGS:
+            raise ValueError(
+                "У клиента уже 100 меток. Снимите ненужную перед добавлением новой."
+            )
+        client.tags = sorted(tags)
+
+    async def has_tag(self, tag):
+        client = clients.ensure_client(self.session, self.user_id)
+        return tag in (client.tags or [])
+
+    async def reply_decision(self, node, state, text, payload):
+        from .waits import event_for
+
+        job = self.session.get(ScenarioWait, state["variables"].get("_wait_id", ""))
+        conversation = self.session.get(Conversation, self.user_id)
+        if (
+            not job
+            or not conversation
+            or job.user_id != self.user_id
+            or job.scenario_id != conversation.scenario_id
+            or job.status != "pending"
+            or job.node_id != node["id"]
+            or job.version != state["version"]
+        ):
+            return "cancelled"
+        if clients.now() >= (job.expires_at or job.due_at) or job.attempts:
+            return "expired"  # Only the timer worker executes the timeout branch.
+        if payload or not text.strip():
+            return "ignore"
+        job.status, job.active_user, job.error = "done", None, ""
+        event = event_for(self.session, job)
+        event.text, event.status = "Клиент ответил до окончания ожидания", "done"
+        state["variables"].pop("_wait_id", None)
+        self.session.flush()
+        return "answer"
 
     async def save_contact(self, kind, value):
         if kind == "phone":
@@ -414,16 +471,18 @@ async def handle_message(payload, *, preferences_only=False):
     subscribe = not incoming and word in {"подписаться на рассылку", "/subscribe"}
     if preferences_only and not unsubscribe:
         return
-    record_incoming(user_id)
     if unsubscribe or subscribe:
         key = f"newsletter:{payload.get('group_id')}:{user_id}:{event_id}"[:160]
         async with user_lock(user_id), CALLBACK_SLOTS:
+            record_incoming(user_id)
             with SessionLocal() as session:
                 lock_conversation(session, user_id)
                 if session.query(DialogEvent).filter_by(event_key=key).first():
                     return
                 client = ensure_client(session, user_id)
                 client.unsubscribed = unsubscribe
+                if unsubscribe:
+                    cancel_waits(session, "Клиент отправил Стоп", user_id=user_id)
                 session.add(
                     DialogEvent(
                         event_key=key,
@@ -450,12 +509,15 @@ async def handle_message(payload, *, preferences_only=False):
                 )
         return
     if incoming.get("action") == "operator_claim":
+        async with user_lock(user_id):
+            record_incoming(user_id)
         if numeric_id(payload.get("group_id")) == get_settings().vk_group_id:
             await assign_operator(payload, message, user_id, claim=incoming)
         return
     key = f"{payload.get('group_id', 0)}:{user_id}:{event_id}"[:160]
     lock = user_lock(user_id)
     async with lock, CALLBACK_SLOTS:
+        record_incoming(user_id)
         with SessionLocal() as session:
             # Serialize messages of one client across app processes on PostgreSQL too.
             lock_conversation(session, user_id)
@@ -507,11 +569,13 @@ async def handle_message(payload, *, preferences_only=False):
                     return
                 if restart:
                     reset_handoff(conversation)
+                    cancel_waits(session, "Диалог начат заново", user_id=user_id)
                 triggers = (
                     values.get("operator_trigger_words")
                     or get_settings().operator_trigger_words
                 )
                 if not incoming and matches(event.text, triggers):
+                    cancel_waits(session, "Диалог передан менеджеру", user_id=user_id)
                     await port.handoff("")
                     conversation.handoff = True
                 else:
@@ -531,6 +595,11 @@ async def handle_message(payload, *, preferences_only=False):
                             )
                         else:
                             if changed:
+                                cancel_waits(
+                                    session,
+                                    "Версия сценария изменилась",
+                                    user_id=user_id,
+                                )
                                 conversation.node_id = ""
                                 conversation.variables = {}
                             variables = dict(conversation.variables)
@@ -544,6 +613,7 @@ async def handle_message(payload, *, preferences_only=False):
                                 "variables": variables,
                                 "handoff": conversation.handoff,
                                 "nonce": variables.pop("_nonce", ""),
+                                "stack": variables.pop("_stack", []),
                             }
                             # handoff notification reads the answers accumulated in this turn.
                             conversation.variables = state["variables"]
@@ -564,8 +634,11 @@ async def handle_message(payload, *, preferences_only=False):
                                 state.get("handoff", False),
                             )
                             conversation.variables = dict(
-                                state["variables"], _nonce=state.get("nonce", "")
+                                state["variables"],
+                                _nonce=state.get("nonce", ""),
+                                _stack=state.get("stack", []),
                             )
+                            schedule_wait(session, conversation, state)
                     else:
                         conversation.node_id = ""
                         if incoming:

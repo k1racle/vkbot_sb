@@ -704,7 +704,14 @@ def update_project(
                 _validate_credential(
                     getattr(project, field_name), field_name, required=True
                 )
-        return project
+    if enabled is False:
+        from . import db
+        from .waits import cancel_waits
+
+        with project_scope(project), db.SessionLocal() as session:
+            cancel_waits(session, "Проект приостановлен")
+            session.commit()
+    return project
 
 
 def public_project(project: Project) -> dict:
@@ -741,8 +748,10 @@ def delete_project(project_id: int, confirmation: str) -> None:
 
 def _cancel_project_jobs(project: Project) -> None:
     from . import db
+    from .waits import cancel_waits
 
     with project_scope(project), db.SessionLocal() as session:
+        cancel_waits(session, "Проект удалён")
         session.query(db.Broadcast).filter(
             db.Broadcast.status.in_(["queued", "running", "paused"])
         ).update({"status": "cancelled"})

@@ -382,6 +382,9 @@ async def worker_tick():
         return
     try:
         with defer_outgoing_audits():
+            from .waits import worker_tick as wait_tick
+
+            await wait_tick()
             recipient = claim_recipient()
             if recipient:
                 await send_recipient(*recipient)

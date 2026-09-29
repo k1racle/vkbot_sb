@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     Integer,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -137,6 +138,26 @@ class Conversation(Base):
     )
 
 
+class ScenarioWait(Base):
+    """One durable pending timer per conversation, isolated by project storage."""
+
+    __tablename__ = "scenario_waits"
+    __table_args__ = (Index("ix_scenario_waits_due", "status", "due_at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(index=True)
+    active_user: Mapped[int | None] = mapped_column(unique=True, nullable=True)
+    scenario_id: Mapped[int] = mapped_column(index=True)
+    version: Mapped[int] = mapped_column()
+    node_id: Mapped[str] = mapped_column(String(64))
+    due_at: Mapped[object] = mapped_column(DateTime)
+    expires_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    attempts: Mapped[int] = mapped_column(default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
 class DialogEvent(Base):
     __tablename__ = "dialog_events"
 
@@ -178,6 +199,7 @@ class Client(Base):
     photo_url: Mapped[str] = mapped_column(Text, default="")
     phone: Mapped[str] = mapped_column(String(80), default="")
     phone_source: Mapped[str] = mapped_column(String(32), default="")
+    tags: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     deactivated: Mapped[bool] = mapped_column(default=False)
     bot_contacted_at: Mapped[object | None] = mapped_column(
         DateTime, nullable=True, index=True
@@ -388,6 +410,8 @@ def init_db(
                     )
     # Additive upgrade: keep existing dialogs and campaigns intact.
     for table, additions in {
+        "clients": {"tags": "JSON NOT NULL DEFAULT '[]'"},
+        "scenario_waits": {"expires_at": "TIMESTAMP"},
         "scenarios": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "broadcasts": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "pending_gifts": {

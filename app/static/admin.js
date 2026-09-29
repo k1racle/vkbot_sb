@@ -24,7 +24,7 @@ window.Admin = {
   },
   icon(name) {
     if (!/^[a-z][a-z0-9-]*$/.test(name)) return "";
-    return `<svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg?v=1#${name}"></use></svg>`;
+    return `<svg class="icon" aria-hidden="true" focusable="false"><use href="/static/icons.svg?v=3#${name}"></use></svg>`;
   },
   async api(path, method = "GET", body) {
     const headers = {
@@ -286,10 +286,38 @@ async function loadClients() {
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)
                 .join(
                   "",
-                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
+                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "wait" ? "Таймер сценария" : m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "retry" ? "Повторная попытка" : m.status === "cancelled" ? "Отменено" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
       : `<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="${e(Admin.projectPrefix)}/admin?section=scenarios">Открыть сценарии</a></div>`;
+    list.querySelectorAll(':scope > article').forEach((card, index) => {
+      if (clients[index].tags?.length) {
+        const tags = document.createElement('p');
+        tags.innerHTML = clients[index].tags.map(t => `<span class="badge">${e(t)}</span>`).join(' ');
+        card.insertBefore(tags, card.querySelector('details'));
+      }
+      const waiting = clients[index].wait;
+      if (!waiting) return;
+      const box = document.createElement('div');
+      box.className = 'notice';
+      const labels = { pending: 'Ожидание до', done: 'Ожидание завершено', cancelled: 'Ожидание отменено', failed: 'Ошибка ожидания' };
+      box.innerHTML = `${Admin.icon('clock')} <strong>${e(labels[waiting.status] || waiting.status)}</strong>${waiting.status === 'pending' ? ` ${e(new Date(waiting.due_at).toLocaleString('ru-RU'))} (время вашего устройства)` : ''}${waiting.error ? `<div class="hint">${e(waiting.error)}</div>` : ''}`;
+      if (waiting.status === 'pending') {
+        const cancel = document.createElement('button');
+        cancel.className = 'btn secondary small';
+        cancel.textContent = 'Отменить ожидание';
+        cancel.onclick = async () => {
+          if (!confirm('Отменить отложенное продолжение? Клиент сможет начать диалог заново через «Меню».')) return;
+          cancel.disabled = true;
+          try {
+            await Admin.api(`/conversations/${clients[index].user_id}/cancel-wait`, 'POST');
+            await loadClients();
+          } catch (error) { Admin.toast(error.message); cancel.disabled = false; }
+        };
+        box.append(document.createElement('br'), cancel);
+      }
+      card.insertBefore(box, card.querySelector('details'));
+    });
     list.querySelectorAll("[data-resume]").forEach(
       (b) =>
         (b.onclick = async () => {

@@ -244,6 +244,7 @@ def serialize(client):
         "vk_url": f"https://vk.ru/id{client.user_id}",
         "phone": client.phone,
         "phone_source": client.phone_source,
+        "tags": client.tags or [],
         "deactivated": client.deactivated,
         "bot_contacted_at": str(client.bot_contacted_at)
         if client.bot_contacted_at

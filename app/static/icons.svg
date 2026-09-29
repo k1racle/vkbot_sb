@@ -172,4 +172,14 @@
     <line x1="21" x2="16.65" y1="21" y2="16.65" />
     <line x1="8" x2="14" y1="11" y2="11" />
   </symbol>
+  <symbol id="clock" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 6v6l4 2" />
+  </symbol>
+  <symbol id="maximize" viewBox="0 0 24 24">
+    <path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3" />
+  </symbol>
+  <symbol id="minimize" viewBox="0 0 24 24">
+    <path d="M8 3v3a2 2 0 0 1-2 2H3m13-5v3a2 2 0 0 0 2 2h3M3 16h3a2 2 0 0 1 2 2v3m8 0v-3a2 2 0 0 1 2-2h3" />
+  </symbol>
 </svg>

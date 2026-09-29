@@ -1,23 +1,28 @@
 import copy
 import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import text
 
 from .db import (
     Campaign,
+    Client,
     Conversation,
     DialogEvent,
     MediaAsset,
     Scenario,
+    ScenarioWait,
     SessionLocal,
 )
 from .dialog import lock_conversation, user_lock
 from .flows import Graph, advance, render, starter_graph, validate_graph
+from .flow_rules import MAX_TAGS, normalize_tag
 from .operators import reset_handoff
+from .waits import cancel_waits
 
 
 def authorize(request: Request):
@@ -51,6 +56,9 @@ class PreviewInput(BaseModel):
     payload: dict = Field(default_factory=dict)
     member: bool = True
     restart: bool = False
+    resume_wait: bool = False
+    simulated_at: AwareDatetime | None = None
+    tags: list[str] = Field(default_factory=list, max_length=100)
 
 
 def serialize(item):
@@ -149,6 +157,7 @@ def publish_scenario(scenario_id: int, body: RevisionInput):
         if errors:
             raise HTTPException(422, errors)
         session.query(Scenario).filter(Scenario.id != item.id).update({"active": False})
+        cancel_waits(session, "Опубликована новая версия сценария")
         item.published, item.active = copy.deepcopy(item.draft), True
         item.version += 1
         item.revision += 1
@@ -161,6 +170,7 @@ def pause_scenario(scenario_id: int, body: RevisionInput):
     with SessionLocal() as session:
         item = get_scenario(session, scenario_id, body.revision)
         item.active = False
+        cancel_waits(session, "Сценарий приостановлен", scenario_id=item.id)
         item.revision += 1
         session.commit()
         return serialize(item)
@@ -180,6 +190,7 @@ def delete_scenario(scenario_id: int, body: RevisionInput):
         scenario_lock(session)
         item = get_scenario(session, scenario_id, body.revision)
         item.is_deleted, item.active = True, False
+        cancel_waits(session, "Сценарий удалён", scenario_id=item.id)
         item.revision += 1
         session.commit()
         return {"ok": True}
@@ -252,9 +263,47 @@ async def preview(body: PreviewInput):
         )
         state.setdefault("version", 0)
         state.setdefault("variables", {})
+        try:
+            clock = body.simulated_at or (
+                datetime.fromisoformat(state["clock"])
+                if state.get("clock")
+                else datetime.now(timezone.utc)
+            )
+            if body.resume_wait and state.get("waiting"):
+                deadline = state["waiting"].get("deadline")
+                clock = (
+                    max(clock, datetime.fromisoformat(deadline))
+                    if deadline
+                    else clock + timedelta(seconds=state["waiting"]["seconds"])
+                )
+            state["clock"] = clock.isoformat()
+            state.setdefault("tags", sorted({normalize_tag(tag) for tag in body.tags}))
+        except (ValueError, TypeError, OverflowError, KeyError):
+            raise HTTPException(422, "Проверьте дату, время и метки предпросмотра")
         messages = []
 
         class PreviewPort:
+            def now(self):
+                return clock
+
+            async def change_tag(self, tag, action):
+                tags = set(state.get("tags", []))
+                tags.add(tag) if action == "add" else tags.discard(tag)
+                if len(tags) > MAX_TAGS:
+                    raise HTTPException(422, "У клиента не более 100 меток")
+                state["tags"] = sorted(tags)
+
+            async def has_tag(self, tag):
+                return tag in state.get("tags", [])
+
+            async def reply_decision(self, node, state, text, payload):
+                deadline = state.get("waiting", {}).get("deadline")
+                if deadline and clock >= datetime.fromisoformat(deadline):
+                    return "expired"
+                if payload or not text.strip():
+                    return "ignore"
+                return "answer"
+
             async def save_contact(self, kind, value):
                 pass  # Simulator only: do not change the client directory.
 
@@ -315,7 +364,20 @@ async def preview(body: PreviewInput):
             PreviewPort(),
             restart=body.restart
             or body.text.strip().casefold() in {"меню", "начать", "старт", "/start"},
+            resume_wait=body.resume_wait,
         )
+        if state.get("waiting"):
+            try:
+                state["waiting"].setdefault(
+                    "deadline",
+                    (
+                        clock + timedelta(seconds=state["waiting"]["seconds"])
+                    ).isoformat(),
+                )
+            except OverflowError:
+                raise HTTPException(
+                    422, "Дата окончания ожидания вне допустимого диапазона"
+                )
         return {"state": state, "messages": messages}
 
 
@@ -336,6 +398,27 @@ def conversations():
                 "assigned_operator_id": c.assigned_operator_id,
                 "assigned_at": str(c.assigned_at) if c.assigned_at else None,
                 "node_id": c.node_id,
+                "tags": (session.get(Client, c.user_id).tags or [])
+                if session.get(Client, c.user_id)
+                else [],
+                "wait": next(
+                    (
+                        {
+                            "status": job.status,
+                            "due_at": job.due_at.isoformat() + "Z",
+                            "error": job.error,
+                        }
+                        for job in session.query(ScenarioWait)
+                        .filter_by(user_id=c.user_id)
+                        .order_by(
+                            (ScenarioWait.status == "pending").desc(),
+                            ScenarioWait.created_at.desc(),
+                            ScenarioWait.id.desc(),
+                        )
+                        .limit(1)
+                    ),
+                    None,
+                ),
                 "variables": {
                     k: v for k, v in c.variables.items() if not k.startswith("_")
                 },
@@ -366,6 +449,20 @@ async def resume(user_id: int):
             if not row:
                 raise HTTPException(404, "Диалог не найден")
             reset_handoff(row)
+            cancel_waits(session, "Диалог сброшен из админки", user_id=user_id)
             row.node_id = ""
+            session.commit()
+            return {"ok": True}
+
+
+@router.post("/conversations/{user_id}/cancel-wait")
+async def cancel_conversation_wait(user_id: int):
+    async with user_lock(user_id):
+        with SessionLocal() as session:
+            lock_conversation(session, user_id)
+            cancelled = cancel_waits(session, "Отменено в админке", user_id=user_id)
+            row = session.get(Conversation, user_id)
+            if row and cancelled:
+                row.node_id = ""
             session.commit()
             return {"ok": True}

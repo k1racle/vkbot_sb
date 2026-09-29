@@ -154,6 +154,9 @@ def unsubscribe_client(user_id: int):
         if not client:
             raise HTTPException(404, "Клиент не найден")
         client.unsubscribed = True
+        from .waits import cancel_waits
+
+        cancel_waits(session, "Клиент отписан в админке", user_id=user_id)
         session.commit()
     return {"ok": True}
 

@@ -1706,3 +1706,35 @@ a:focus-visible {
 .block-palette .icon { width: 15px; height: 15px; }
 .logout { display: inline-flex; gap: 7px; align-items: center; }
 #broadcast-rename { max-width: 520px; }
+/* The editor fills the app viewport; dialogs remain in the browser top layer. */
+body.flow-fullscreen { overflow: hidden; }
+body.flow-fullscreen .sidebar, body.flow-fullscreen .project-topbar,
+body.flow-fullscreen > .skip-link { visibility: hidden; }
+#flow-app.is-fullscreen {
+  position: fixed; inset: 0; z-index: 900; padding: 12px;
+  height: 100dvh; background: var(--bg, #f5f7f2);
+  display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+}
+#flow-app.is-fullscreen > .page-heading,
+#flow-app.is-fullscreen > .footnote { display: none; }
+#flow-app.is-fullscreen .flow-toolbar { margin: 0; flex-shrink: 0; padding: 10px 14px; }
+#flow-app.is-fullscreen #flow-errors { margin: 0; max-height: 100px; overflow: auto; flex-shrink: 0; }
+#flow-app.is-fullscreen .editor { flex: 1; height: auto; min-height: 0; max-height: none; }
+#flow-app.is-fullscreen .canvas-column { height: 100%; min-height: 0; }
+#flow-app.is-fullscreen .flow-canvas { min-height: 0; }
+#flow-app.is-fullscreen .inspector { min-height: 0; max-height: none; }
+.schedule-days { border: 1px solid var(--line); border-radius: 8px; margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 10px; }
+.inspector .schedule-days label { margin: 0; }
+.preview-controls { padding: 0 18px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.preview-controls label { font-size: 11px; margin: 0; }
+.preview-controls input { padding: 6px; min-width: 0; }
+.preview-controls p { grid-column: 1 / -1; margin: 0; }
+.preview-dialog { max-height: 95dvh; }
+@media (max-width: 760px) {
+  #flow-app.is-fullscreen { padding: 5px; }
+  #flow-app.is-fullscreen .editor { display: grid; grid-template-columns: 1fr; grid-template-rows: minmax(160px, 1fr) minmax(140px, .8fr); }
+  #flow-app.is-fullscreen .block-palette { max-height: 75px; overflow: auto; padding: 5px; }
+  #flow-app.is-fullscreen .inspector { overflow: auto; padding: 10px; }
+  #flow-app.is-fullscreen .flow-toolbar .btn { padding: 7px; font-size: 11px; }
+  .preview-controls { grid-template-columns: 1fr; }
+}
