@@ -156,6 +156,9 @@ def publish_scenario(scenario_id: int, body: RevisionInput):
         # One default entry plus any number of non-conflicting keyword entries.
         if session.bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(-731942)"))
+        elif session.bind.dialect.name == "sqlite":
+            # Serialize conflict checks before reading any other published entry.
+            session.execute(text("BEGIN IMMEDIATE"))
         item = get_scenario(session, scenario_id, body.revision)
         errors = checked(session, item.draft)
         if errors:

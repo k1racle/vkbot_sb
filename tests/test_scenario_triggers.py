@@ -196,6 +196,43 @@ def test_keyword_restart_dedup_and_no_cross_user_state(setup):
         assert session.get(db.Conversation, 77).variables["reply"] == "Ответ Анны"
 
 
+def test_keyword_launch_collects_phone_and_cancels_reminder(timer):
+    from test_contact_reminders import contact_graph
+
+    client, sessions, sent, _, _ = timer
+    data = contact_graph()
+    data["entry"] = {"mode": "keywords", "keywords": "хочу курс", "match": "contains"}
+    course = install(client, data)
+    client.post("/vk/callback", json=event("Здравствуйте, хочу курс!"))
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.scenario_id == course["id"] and row.node_id == "phone"
+        assert session.query(db.ScenarioWait).one().status == "pending"
+    client.post("/vk/callback", json=event("89991234567", 2))
+    assert "Контакт получен: +79991234567" in sent.call_args.args[1]
+    with sessions() as session:
+        assert session.get(db.Client, 77).phone == "+79991234567"
+        assert session.query(db.ScenarioWait).one().status == "cancelled"
+
+
+def test_publishing_other_scenario_keeps_keyword_buttons_valid(setup):
+    client, sessions, sent = setup
+    data = starter_graph()
+    data["entry"] = {"mode": "keywords", "keywords": "хочу курс", "match": "contains"}
+    course = install(client, data)
+    client.post("/vk/callback", json=event("хочу курс"))
+    payload = json.loads(
+        sent.call_args.kwargs["keyboard"]["buttons"][0][0]["action"]["payload"]
+    )
+    install(client, graph("Другая цепочка", "подарок курса"))
+    install(client, graph("Меню", None))
+    client.post("/vk/callback", json=event("Подобрать товар", 2, payload=payload))
+    assert sent.call_args.args[1] == "Расскажите, что ищете?"
+    with sessions() as session:
+        row = session.get(db.Conversation, 77)
+        assert row.scenario_id == course["id"] and row.node_id == "question"
+
+
 def test_conflicting_keyword_publish_is_atomic(setup):
     client, sessions, _ = setup
     first = install(client)
@@ -409,3 +446,35 @@ def test_published_routes_and_waits_on_real_storage(storage, monkeypatch):
                     next(j for j in jobs if j.status == "pending").scenario_id
                     == keyword["id"]
                 )
+
+
+def test_concurrent_publication_cannot_activate_duplicate_phrases(storage):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from fastapi import HTTPException
+    from app import projects, scenario_api
+
+    projects.init_registry()
+    project = projects.list_projects()[0]
+    with projects.project_scope(project), db.SessionLocal() as session:
+        rows = [db.Scenario(title=f"Цепочка {i}", draft=graph()) for i in range(2)]
+        session.add_all(rows)
+        session.commit()
+        ids = [row.id for row in rows]
+    barrier = Barrier(2)
+
+    def attempt(ident):
+        with projects.project_scope(project):
+            barrier.wait(timeout=15)
+            try:
+                scenario_api.publish_scenario(
+                    ident, scenario_api.RevisionInput(revision=0)
+                )
+                return 200
+            except HTTPException as error:
+                return error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(attempt, ids)) == [200, 422]
+    with projects.project_scope(project), db.SessionLocal() as session:
+        assert session.query(db.Scenario).filter_by(active=True).count() == 1
