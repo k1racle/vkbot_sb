@@ -9,7 +9,7 @@
     promo: ["Промокод", "tag"],
     operator: ["Менеджер", "user-round"],
     end: ["Завершение", "circle-stop"],
-    contact: ["Телефон / email", "user-round"],
+    contact: ["Контакты", "user-round"],
     phone_condition: ["Телефон указан?", "check"],
     set_variable: ["Записать переменную", "pencil"],
     variable_condition: ["Проверить ответ", "git-branch"],
@@ -154,7 +154,7 @@
     if (n.type === 'call_subflow') return graph().nodes.find(x => x.id === n.subflow_id)?.title || 'Выберите подцепочку справа';
     if (n.type === 'return') return 'Вернуться туда, откуда вызвана подцепочка';
     if (n.type === 'wait') return `Пауза: ${n.delay_value} ${waitUnits[n.delay_unit]}\nЗатем — следующий блок`;
-    if (n.type === 'contact') return `${n.contact_type === 'email' ? 'Email' : 'Телефон'} → {${n.variable}}\n${n.text}${n.reminder_enabled ? `\nНапомнить: ${n.reminder_delay_value} ${waitUnits[n.reminder_delay_unit]}` : ''}${n.allow_later ? '\nКнопка «Позже»' : ''}`;
+    if (n.type === 'contact') return `${(n.contact_types || [n.contact_type]).map(k => ({phone: 'Телефон', email: 'Email', messenger: 'Мессенджер'})[k]).join(' / ')} (${n.contact_requirement === 'all' ? 'все' : 'любой'}) → {${n.variable}}\n${n.text}${n.reminder_enabled ? `\nНапомнить: ${n.reminder_delay_value} ${waitUnits[n.reminder_delay_unit]}` : ''}${n.allow_later ? '\nКнопка «Позже»' : ''}`;
     if (n.type === 'phone_condition') return n.phone_check_mode === 'any' ? 'Есть сохранённый телефон, в том числе из VK?' : 'Клиент уже оставил телефон боту?';
     if (n.type === 'set_variable') return `{${n.variable}} = ${n.value || '(пусто)'}`;
     if (n.type === 'variable_condition') return `Проверка {${n.variable}}: ${comparisonNames[n.comparison]} ${['empty', 'not_empty'].includes(n.comparison) ? '' : n.value}`;
@@ -333,7 +333,7 @@
       html += `<label>${n.type === 'variable_condition' ? 'Какую переменную проверить' : 'Имя переменной'}<input data-field="variable" value="${e(n.variable)}" pattern="[a-z][a-z0-9_]*" maxlength="32" placeholder="phone, email, interest"></label><p class="hint">Латинские буквы, цифры и _. В сообщении используйте <code>{${e(n.variable)}}</code>.</p>`;
     }
     if (n.type === 'contact') {
-      html += `<label>Какой контакт запросить<select data-field="contact_type"><option value="phone" ${n.contact_type === 'phone' ? 'selected' : ''}>Телефон</option><option value="email" ${n.contact_type === 'email' ? 'selected' : ''}>Email</option></select></label><label class="check"><input type="checkbox" data-field="allow_skip" ${n.allow_skip ? 'checked' : ''}> Разрешить ответ «Пропустить»</label><label>Подсказка при неверном формате<textarea data-field="error_text" maxlength="500" placeholder="Пусто — стандартная подсказка бота">${e(n.error_text)}</textarea></label><p class="hint">Бот ждёт текстовый ответ и проверяет формат, но не принадлежность контакта. Телефон сразу попадает в карточку клиента; оба контакта сохраняются в ответах диалога. Это не подписка на рассылку.</p>`;
+      html += `<fieldset><legend>Допустимые контакты</legend>${Object.entries({phone: 'Телефон', email: 'Email', messenger: 'Ссылка на мессенджер'}).map(([kind, label]) => `<label class="check"><input type="checkbox" data-contact-kind="${kind}" ${(n.contact_types || [n.contact_type]).includes(kind) ? 'checked' : ''}> ${label}</label>`).join('')}</fieldset><label>Когда продолжать сценарий<select data-field="contact_requirement"><option value="any" ${n.contact_requirement !== 'all' ? 'selected' : ''}>Достаточно любого выбранного контакта</option><option value="all" ${n.contact_requirement === 'all' ? 'selected' : ''}>Нужны все выбранные контакты</option></select></label><label class="check"><input type="checkbox" data-field="allow_skip" ${n.allow_skip ? 'checked' : ''}> Разрешить ответ «Пропустить»</label><label>Подсказка при неверном формате<textarea data-field="error_text" maxlength="500" placeholder="Пусто — стандартная подсказка бота">${e(n.error_text)}</textarea></label><p class="hint">Можно прислать несколько контактов одним сообщением. Если нужны все, их можно отправить по очереди. Поддерживаются ссылки t.me, telegram.me, wa.me, api.whatsapp.com, chat.whatsapp.com, vk.me, m.me и max.ru. Телефон сохраняется в карточке клиента. Все контакты сохраняются в переменной блока, отдельно — с окончаниями _phone, _email, _messenger. Это не подписка на рассылку.</p>`;
       html += `<div class="divider"></div><h3>Если контакт не оставлен</h3><label class="check"><input type="checkbox" data-field="reminder_enabled" ${n.reminder_enabled ? 'checked' : ''}> Напомнить, если человек молчит</label>${n.reminder_enabled ? contactReminderFields(n, 'reminder') : ''}<label class="check"><input type="checkbox" data-field="allow_later" ${n.allow_later ? 'checked' : ''}> Добавить кнопку «Позже»</label>`;
       if (n.allow_later) html += `<label>Ответ на «Позже»<textarea data-field="later_text" maxlength="3500" placeholder="Пусто — предложить прислать контакт в удобное время">${e(n.later_text)}</textarea></label><label class="check"><input type="checkbox" data-field="later_reminder_enabled" ${n.later_reminder_enabled ? 'checked' : ''}> Напомнить после «Позже»</label>${n.later_reminder_enabled ? contactReminderFields(n, 'later_reminder') : ''}`;
       html += '<p class="hint">Каждый таймер отправляет одно напоминание и оставляет сбор контакта открытым. Неверный ответ не меняет срок. «Позже» заменяет прежний таймер; повторное нажатие отсчитывает срок заново. Если напоминание после «Позже» выключено, старое отменяется.</p><p class="hint">Корректный контакт отменяет напоминание и ведёт дальше. «Пропустить» тоже ведёт дальше, но без нового контакта; «Позже» остаётся в этом блоке. Для обязательного контакта выключите «Пропустить». В текстах доступны переменные, например {first_name}.</p><p class="hint">Срок: от 1 секунды до 3650 дней. Таймер переживает перезапуск. «Стоп», запрет сообщений, менеджер, публикация новой версии или пауза отменяют напоминания. После простоя отправка возможна при запуске сервера, если контакт ещё не получен.</p>';
@@ -448,6 +448,21 @@
             renderInspector();
         });
       });
+    $('block-inspector').querySelectorAll('[data-contact-kind]').forEach(input => {
+      input.onchange = () => {
+        snapshot();
+        const kinds = new Set(n.contact_types || [n.contact_type]);
+        input.checked ? kinds.add(input.dataset.contactKind) : kinds.delete(input.dataset.contactKind);
+        if (!kinds.size) { input.checked = true; return; }
+        const oldPrompt = n.text;
+        n.contact_types = [...kinds];
+        if (['Оставьте телефон для связи, например +7 999 123-45-67.', 'Оставьте email для связи, например name@example.com.'].includes(oldPrompt) || oldPrompt.startsWith('Оставьте контакты для связи:')) {
+          n.text = 'Оставьте контакты для связи: ' + n.contact_types.map(k => ({phone: 'телефон', email: 'email', messenger: 'ссылку на мессенджер'})[k]).join(', ') + '.';
+        }
+        if (['phone', 'email'].includes(n.variable) && kinds.size > 1) n.variable = 'contact';
+        markDirty(); renderNodes(); renderInspector();
+      };
+    });
     $('block-inspector').querySelectorAll('[data-weekday]').forEach(input => {
       input.onchange = () => {
         snapshot();
@@ -692,6 +707,8 @@
           campaign_id: null,
           media_id: "",
           contact_type: 'phone',
+          contact_types: ['phone'],
+          contact_requirement: 'any',
           allow_skip: true,
           error_text: '',
           comparison: 'equals',

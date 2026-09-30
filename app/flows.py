@@ -104,6 +104,10 @@ class Node(BaseModel):
     campaign_id: int | None = Field(default=None, gt=0)
     media_id: str = Field(default="", max_length=32)
     contact_type: Literal["phone", "email"] = "phone"
+    contact_types: list[Literal["phone", "email", "messenger"]] | None = Field(
+        default=None, min_length=1, max_length=3
+    )
+    contact_requirement: Literal["any", "all"] = "any"
     phone_check_mode: Literal["provided", "any"] = "provided"
     allow_skip: bool = True
     error_text: str = Field(default="", max_length=500)
@@ -347,6 +351,34 @@ def matches(text, words):
 
 def normalize_contact(text, kind):
     value = text.strip()
+    if kind == "messenger":
+        if len(value) > 500 or re.search(r"\s", value):
+            return None
+        candidate = value if "://" in value else "https://" + value
+        try:
+            parsed = urlparse(candidate)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or parsed.hostname
+                not in {
+                    "t.me",
+                    "telegram.me",
+                    "wa.me",
+                    "api.whatsapp.com",
+                    "chat.whatsapp.com",
+                    "vk.me",
+                    "m.me",
+                    "max.ru",
+                }
+                or parsed.username
+                or parsed.password
+                or parsed.port
+                or not parsed.path.strip("/")
+            ):
+                return None
+        except ValueError:
+            return None
+        return candidate
     if kind == "phone":
         if len(value) > 80 or not re.fullmatch(r"\+?[0-9\s().-]+", value):
             return None
@@ -382,6 +414,40 @@ def normalize_contact(text, kind):
     ):
         return None
     return local + "@" + domain
+
+
+CONTACT_LABELS = {
+    "phone": "телефон",
+    "email": "email",
+    "messenger": "ссылку на мессенджер",
+}
+
+
+def contact_kinds(node):
+    return list(dict.fromkeys(node.get("contact_types") or [node["contact_type"]]))
+
+
+def extract_contacts(text, node):
+    # Preserve strict validation for existing single-contact published scenarios.
+    if not node.get("contact_types"):
+        kind = node["contact_type"]
+        value = normalize_contact(text, kind)
+        return {kind: value} if value else {}
+    found = {}
+    remaining = text
+    patterns = {
+        "messenger": r"(?<![\w./:@-])(?:https?://)?(?:t\.me|telegram\.me|wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com|vk\.me|m\.me|max\.ru)/[^\s,;<>]+",
+        "email": r"[^\s,;<>:@]+@[^\s,;<>:@]+",
+        "phone": r"(?<![\w+])\+?\d[\d ()\.\-]{8,}\d(?!\w)",
+    }
+    # Remove links and email before looking for numbers inside them.
+    for kind in ("messenger", "email", "phone"):
+        for match in re.finditer(patterns[kind], remaining, re.IGNORECASE):
+            value = normalize_contact(match[0].rstrip(".!?"), kind)
+            if value and kind in contact_kinds(node):
+                found.setdefault(kind, value)
+        remaining = re.sub(patterns[kind], " ", remaining, flags=re.IGNORECASE)
+    return found
 
 
 def number(value):
@@ -470,11 +536,7 @@ def contact_reminder(node, mode):
         node.get(f"{prefix}_delay_value", 24 if later else 3)
         * WAIT_UNITS[node.get(f"{prefix}_delay_unit", "hours")]
     )
-    label = (
-        "адрес электронной почты"
-        if node["contact_type"] == "email"
-        else "номер телефона"
-    )
+    label = ", ".join(CONTACT_LABELS[k] for k in contact_kinds(node))
     message = node.get(f"{prefix}_text", "").strip() or (
         f"Напоминаем: пришлите {label}, когда вам будет удобно, чтобы продолжить."
     )
@@ -563,25 +625,57 @@ async def accept_contact(node, state, text, payload, port, *, resume_wait=False)
         await port.emit(render(message, variables), keyboard=keyboard)
         return False
     skipped = node["allow_skip"] and text.strip().casefold() == "пропустить"
-    value = normalize_contact(text, node["contact_type"])
-    if not skipped and value is None:
+    values = extract_contacts(text, node)
+    if not skipped and not values:
         default_error = (
             "Введите телефон: от 10 до 15 цифр, можно с +, пробелами и скобками. Например +7 999 123-45-67."
             if node["contact_type"] == "phone"
             else "Введите email в формате name@example.com."
         )
+        if node.get("contact_types"):
+            default_error = (
+                "Пришлите "
+                + ", ".join(CONTACT_LABELS[k] for k in contact_kinds(node))
+                + ". Например: +7 999 123-45-67, name@example.com, https://t.me/username."
+            )
         await port.emit(node["error_text"] or default_error, keyboard=keyboard)
         return False
+    if not skipped and node.get("contact_requirement") == "all":
+        pending = variables.get("_contact_values", {})
+        collected = (
+            dict(pending.get("values", {})) if pending.get("node") == node["id"] else {}
+        )
+        collected.update(values)
+        values = collected
+        missing = [k for k in contact_kinds(node) if k not in values]
+        if missing:
+            variables["_contact_values"] = {"node": node["id"], "values": values}
+            await port.emit(
+                "Спасибо! Ещё пришлите: "
+                + ", ".join(CONTACT_LABELS[k] for k in missing)
+                + ".",
+                keyboard=keyboard,
+            )
+            return False
     await port.cancel_contact_wait(
         state, "Сбор контакта пропущен" if skipped else "Контакт получен"
     )
     state.pop("waiting", None)
     variables.pop("_contact_reminder", None)
+    variables.pop("_contact_values", None)
+    if node.get("contact_types"):
+        for kind in CONTACT_LABELS:
+            variables.pop(f"{node['variable']}_{kind}", None)
     if skipped:
         variables.pop(node["variable"], None)
     else:
-        variables[node["variable"]] = value
-        await port.save_contact(node["contact_type"], value)
+        variables[node["variable"]] = "; ".join(
+            values[k] for k in contact_kinds(node) if k in values
+        )
+        for kind, value in values.items():
+            if node.get("contact_types"):
+                variables[f"{node['variable']}_{kind}"] = value
+            await port.save_contact(kind, value)
     return True
 
 
@@ -606,6 +700,7 @@ async def advance(
         state["handoff"] = False
         state.pop("waiting", None)
         variables.pop("_contact_reminder", None)
+        variables.pop("_contact_values", None)
         state["stack"] = []
         current = next(n for n in graph["nodes"] if n["type"] == "start")
     elif current["type"] == "wait_reply":

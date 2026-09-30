@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+from datetime import timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from .config import SettingsProxy
 from .crm_api import router as crm_router
 from .db import (
     Campaign,
+    DialogEvent,
     PendingGift,
     ProcessedComment,
     SessionLocal,
@@ -73,6 +75,17 @@ logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 app = FastAPI(title="VK Бот", dependencies=[Depends(protect_admin_form)])
 templates = Jinja2Templates(directory="app/templates")
+
+
+def interaction_time(value):
+    if value is None:
+        return "—"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M:%S")
+
+
+templates.env.filters["interaction_time"] = interaction_time
 # SessionMiddleware must be outside ProjectMiddleware: it supplies owner auth.
 app.add_middleware(ProjectMiddleware)
 app.add_middleware(
@@ -205,6 +218,16 @@ async def admin_page(
             .limit(30)
             .all()
         )
+        dialog_recent = (
+            (
+                session.query(DialogEvent)
+                .order_by(DialogEvent.created_at.desc(), DialogEvent.id.desc())
+                .limit(30)
+                .all()
+            )
+            if section == "stats"
+            else []
+        )
         campaigns = (
             session.query(Campaign)
             .filter_by(is_deleted=False)
@@ -291,6 +314,7 @@ async def admin_page(
                 "status_counts": status_counts,
             },
             "recent": recent,
+            "dialog_recent": dialog_recent,
             "campaigns": campaigns,
         },
     )

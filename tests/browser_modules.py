@@ -77,9 +77,11 @@ def exercise_modules(page, output):
     # Create through the palette too, then delete the disconnected scratch node.
     page.locator('[data-add="contact"]').click()
     inspector = page.locator("#block-inspector")
-    inspector.locator('[data-field="contact_type"]').select_option("email")
-    assert inspector.locator('[data-field="variable"]').input_value() == "email"
-    assert "name@example.com" in inspector.locator('[data-field="text"]').input_value()
+    inspector.locator('[data-contact-kind="email"]').check()
+    inspector.locator('[data-contact-kind="messenger"]').check()
+    assert inspector.locator('[data-field="variable"]').input_value() == "contact"
+    assert "мессенджер" in inspector.locator('[data-field="text"]').input_value()
+    inspector.locator('[data-field="contact_requirement"]').select_option("all")
     inspector.locator("#delete-node").click()
     page.locator('.flow-node[data-id="phone"] .node-heading').click()
     inspector.locator('[data-field="allow_skip"]').uncheck()
