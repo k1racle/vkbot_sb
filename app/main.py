@@ -56,6 +56,7 @@ from .gifts import (
     invite_without_gift,
     resolve_chat_url,
     validate_chat_url,
+    validate_mention_post,
 )
 from .operators import parse_operator_ids
 from .project_web import ProjectMiddleware, protect_admin_form
@@ -249,6 +250,7 @@ async def admin_page(
             selected_campaign = None
     form = {
         "chat_url": values.get("chat_url", ""),
+        "video_mention_post_id": values.get("video_mention_post_id", ""),
         "resolved_chat_url": resolve_chat_url(values),
         "default_chat_url": resolve_chat_url({}),
         "test_mode": as_bool(values.get("test_mode", str(settings.test_mode))),
@@ -330,6 +332,7 @@ async def update_admin_settings(
     test_mode: str | None = Form(None),
     test_trigger_phrase: str = Form("тестовое сообщение"),
     chat_url: str = Form(""),
+    video_mention_post_id: str = Form(""),
     csrf_token: str = Form(""),
 ):
     if not admin_required(request):
@@ -339,7 +342,8 @@ async def update_admin_settings(
         "test_trigger_phrase": test_trigger_phrase.strip() or "тестовое сообщение",
     }
     # Older forms/clients without this new field must not erase the saved URL.
-    if "chat_url" in await request.form():
+    submitted = await request.form()
+    if "chat_url" in submitted or "video_mention_post_id" in submitted:
         expected = request.session.get("csrf", "")
         received = request.headers.get("X-CSRF-Token") or csrf_token
         if (
@@ -351,7 +355,10 @@ async def update_admin_settings(
                 "Обновите страницу настроек и повторите сохранение.", status_code=403
             )
         try:
-            values_to_save["chat_url"] = validate_chat_url(chat_url)
+            if "chat_url" in submitted:
+                values_to_save["chat_url"] = validate_chat_url(chat_url)
+            if "video_mention_post_id" in submitted:
+                values_to_save["video_mention_post_id"] = validate_mention_post(video_mention_post_id)
         except ValueError:
             return RedirectResponse(
                 "/admin?section=settings&settings_error=chat_url",

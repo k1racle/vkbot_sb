@@ -97,7 +97,7 @@ async def invite_without_gift(session, comment, campaign):
             ProcessedComment.user_id == comment.user_id,
             ProcessedComment.campaign_id == campaign.id,
             ProcessedComment.status.in_(
-                ["chat_inviting", "chat_invited", "chat_invited_dm"]
+                ["chat_inviting", "chat_invited", "chat_invited_dm", "chat_mentioned", "mention_sending"]
             ),
             ProcessedComment.id != record.id,
         )
@@ -136,6 +136,8 @@ async def invite_without_gift(session, comment, campaign):
             except vk_api.VkApiError as error:
                 if error.code not in {901, 902}:
                     raise
+        if await mention_fallback(session, comment, invitation, guid, record, "chat_mentioned"):
+            return
         record.status = "chat_invite_unavailable"
         record.error = (
             "Приглашение не отправлено: нет токена для ответа под видео и разрешения "
@@ -146,6 +148,34 @@ async def invite_without_gift(session, comment, campaign):
         return
     record.status, record.error = "chat_invited", None
     session.commit()
+
+
+def validate_mention_post(value: str) -> str:
+    value = value.strip()
+    if value and (len(value) > 10 or not value.isascii() or not value.isdecimal() or not 0 < int(value) <= 2147483647):
+        raise ValueError("Invalid mention post ID")
+    return str(int(value)) if value else ""
+
+
+async def mention_fallback(session, comment, invitation, guid, record, status):
+    from .db import Client
+
+    client = session.get(Client, comment.user_id)
+    if client and client.unsubscribed:
+        return False
+    try:
+        post = validate_mention_post(read_settings(session).get("video_mention_post_id", ""))
+    except ValueError:
+        return False
+    if not post:
+        return False
+    # Commit before sending; duplicate events and ambiguous errors must not retry.
+    record.status = "mention_sending"
+    session.commit()
+    await vk_api.mention_video_author(comment, int(post), invitation, guid=guid)
+    record.status, record.error = status, None
+    session.commit()
+    return True
 
 
 def validate_chat_url(value: str) -> str:
@@ -303,6 +333,8 @@ async def invite_to_chat(session, comment, campaign):
             except vk_api.VkApiError as error:
                 if error.code not in {901, 902}:
                     raise
+        if await mention_fallback(session, comment, invitation, gift.id, record, "video_mentioned"):
+            return
         record.status = "video_waiting_chat"
         record.error = (
             "Подарок сохранён, приглашение не отправлено: нет токена для ответа под видео "

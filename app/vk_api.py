@@ -89,6 +89,21 @@ def video_reply_available() -> bool:
     return bool(fresh and fresh.enabled and fresh.video_token)
 
 
+async def mention_video_author(comment, post_id: int, message: str, guid: str):
+    """Mention on a configured wall post; notification delivery is VK's decision."""
+    group_id = get_settings().vk_group_id
+    if comment.source_type != "video" or comment.owner_id != -group_id or post_id <= 0:
+        raise ValueError("Invalid video mention destination")
+    await call(
+        "wall.createComment",
+        owner_id=-group_id,
+        post_id=post_id,
+        from_group=group_id,
+        message=f"[id{comment.user_id}|Ответ на ваш комментарий к видео]: {message}",
+        guid=guid,
+    )
+
+
 async def reply_to_video_comment(comment, message: str, guid: str) -> None:
     """Use the owner's optional user credential ONLY for this API operation.
 
