@@ -6,6 +6,7 @@ from io import BytesIO
 import json
 
 import pytest
+import httpx
 from openpyxl import load_workbook
 from sqlalchemy import text
 
@@ -403,6 +404,121 @@ def test_video_boundary_and_paused_project_no_calls(two_projects):
             )
         )
     assert env.network.calls == []
+
+
+@pytest.mark.parametrize("retry_on", ["video", "wall"])
+def test_auth_rejection_retries_same_gift_with_fresh_token(two_projects, retry_on):
+    env, first, second = two_projects
+    first = configure(env.client, first, video_token="old-video-key")
+    campaign(first, delivery_mode="chat_invite")
+    campaign(second, delivery_mode="chat_invite")
+    env.network.replies["video.createComment"] = {
+        "error": {
+            "error_code": 5,
+            "error_msg": "access_token was given to another ip address",
+        }
+    }
+    callback(env.client, first, video(first))
+    with session_for(first) as session:
+        gift_id = session.query(db.PendingGift).one().id
+    first = configure(env.client, first, video_token="new-video-key")
+    del env.network.replies["video.createComment"]
+    callback(env.client, first, video(first))  # Same Callback must not trigger a retry.
+    assert len(env.network.calls) == 1
+    build = video if retry_on == "video" else comment
+    callback(env.client, first, build(first, number=2))
+    assert status(first) == "waiting_chat"
+    replies = list(env.network.calls)
+    assert len(replies) == 2
+    assert replies[-1]["method"] == f"{retry_on}.createComment"
+    assert replies[-1]["params"]["access_token"] == (
+        "new-video-key" if retry_on == "video" else first.token
+    )
+    assert replies[0]["params"]["guid"] == replies[-1]["params"]["guid"] == gift_id
+    assert replies[0]["params"]["message"] == replies[-1]["params"]["message"]
+    callback(env.client, first, build(first, number=2))
+    callback(env.client, first, build(first, number=3))
+    assert env.network.calls == replies
+    with session_for(first) as session:
+        assert session.query(db.PendingGift).one().id == gift_id
+        assert (
+            session.query(db.ProcessedComment).filter_by(comment_id=1).one().status
+            == "failed"
+        )
+    with session_for(second) as session:
+        assert session.query(db.PendingGift).count() == 0
+    callback(env.client, first, message(first, text="Подарок"))
+    callback(env.client, first, message(first, text="Подарок", number=2))
+    with session_for(first) as session:
+        assert session.query(db.PendingGift).one().status == "sent"
+        assert session.query(db.PromoDelivery).count() == 1
+
+
+def test_repeated_auth_rejection_keeps_latest_attempt_and_one_gift(two_projects):
+    env, first, _ = two_projects
+    first = configure(env.client, first, video_token="video-key")
+    campaign(first, delivery_mode="chat_invite")
+    env.network.replies["video.createComment"] = {
+        "error": {"error_code": 5, "error_msg": "Invalid token"}
+    }
+    for number in (1, 2):
+        callback(env.client, first, video(first, number=number))
+        assert status(first) == "failed"
+    del env.network.replies["video.createComment"]
+    callback(env.client, first, video(first, number=3))
+    callback(env.client, first, video(first, number=4))
+    assert len(env.network.calls) == 3
+    with session_for(first) as session:
+        gift = session.query(db.PendingGift).one()
+        attempt = (
+            session.query(db.ProcessedComment).filter_by(event_key=gift.event_key).one()
+        )
+        assert attempt.comment_id == 3 and attempt.status == "waiting_chat"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unknown_vk_error"])
+def test_ambiguous_video_failure_does_not_retry_invitation(
+    two_projects, monkeypatch, failure
+):
+    env, first, _ = two_projects
+    first = configure(env.client, first, video_token="video-key")
+    campaign(first, delivery_mode="chat_invite")
+    with monkeypatch.context() as patch:
+        if failure == "timeout":
+
+            async def timeout(*args, **kwargs):
+                raise httpx.ReadTimeout("No response")
+
+            patch.setattr(vk_api, "reply_to_video_comment", timeout)
+        else:
+            env.network.replies["video.createComment"] = {
+                "error": {"error_code": 1, "error_msg": "Unknown error"}
+            }
+        callback(env.client, first, video(first))
+    assert status(first) == "failed"
+    env.network.replies.clear()
+    calls = list(env.network.calls)
+    callback(env.client, first, video(first, number=2))
+    assert status(first) == "invite_duplicate"
+    assert env.network.calls == calls
+
+
+def test_saved_gift_without_invitation_retries_after_adding_video_token(two_projects):
+    env, first, _ = two_projects
+    campaign(first, delivery_mode="chat_invite")
+    env.network.replies["messages.isMessagesFromGroupAllowed"] = {
+        "response": {"is_allowed": 0}
+    }
+    callback(env.client, first, video(first))
+    assert status(first) == "video_waiting_chat"
+    first = configure(env.client, first, video_token="new-video-key")
+    callback(env.client, first, video(first, number=2))
+    callback(env.client, first, video(first, number=3))
+    assert (
+        len([c for c in env.network.calls if c["method"] == "video.createComment"]) == 1
+    )
+    with session_for(first) as session:
+        assert session.query(db.PendingGift).count() == 1
 
 
 def test_plus_additive_migration_preserves_campaigns(two_projects):

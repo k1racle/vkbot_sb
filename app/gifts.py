@@ -238,22 +238,40 @@ async def invite_to_chat(session, comment, campaign):
         session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
     )
     active_key = f"{comment.user_id}:{campaign.id}"
-    if session.query(PendingGift).filter_by(active_key=active_key).first():
-        record.status = "invite_duplicate"
-        session.commit()
-        return
-    variants = campaign.public_reply_variants or DEFAULT_INVITATIONS
-    chat_url = resolve_chat_url(read_settings(session))
-    invitation = secrets.choice(variants).replace("{chat_url}", chat_url)
-    gift = PendingGift(
-        id=uuid4().hex,
-        user_id=comment.user_id,
-        campaign_id=campaign.id,
-        event_key=comment.event_key,
-        active_key=active_key,
-        invitation_text=invitation,
-    )
-    session.add(gift)
+    gift = session.query(PendingGift).filter_by(active_key=active_key).first()
+    if gift is not None:
+        previous = (
+            session.query(ProcessedComment).filter_by(event_key=gift.event_key).first()
+        )
+        # Only a definite authentication rejection proves that VK did not send
+        # the invitation. Timeouts and ambiguous failures must remain deduplicated.
+        rejected = (
+            previous is not None
+            and previous.status == "failed"
+            and (previous.error or "").partition(":")[0] == "5"
+        )
+        unavailable = previous is not None and previous.status == "video_waiting_chat"
+        can_reply = comment.source_type == "wall" or vk_api.video_reply_available()
+        if gift.status != "pending" or not can_reply or not (rejected or unavailable):
+            record.status = "invite_duplicate"
+            session.commit()
+            return
+        # Keep the same gift, message and guid. Point to the new attempt before
+        # sending so a subsequent comment cannot retry an already successful or
+        # interrupted attempt using the original authentication error.
+        gift.event_key = comment.event_key
+        invitation = gift.invitation_text
+    else:
+        invitation = invitation_text(campaign, read_settings(session))
+        gift = PendingGift(
+            id=uuid4().hex,
+            user_id=comment.user_id,
+            campaign_id=campaign.id,
+            event_key=comment.event_key,
+            active_key=active_key,
+            invitation_text=invitation,
+        )
+        session.add(gift)
     record.status = "waiting_chat"
     # A failed/ambiguous public reply must not erase the customer's entitlement.
     # Duplicate callbacks never create another invite; wall guid is stable too.
@@ -289,7 +307,8 @@ async def invite_to_chat(session, comment, campaign):
         record.error = (
             "Подарок сохранён, приглашение не отправлено: нет токена для ответа под видео "
             "и разрешения на личные сообщения. Подключите токен в «Проектах» или "
-            "разместите ссылку на чат в описании видео: " + chat_url
+            "разместите ссылку на чат в описании видео: "
+            + resolve_chat_url(read_settings(session))
         )
         session.commit()
 
