@@ -15,6 +15,9 @@ def comments(setup, monkeypatch):
     monkeypatch.setattr(main, "send_message", sent)
     monkeypatch.setattr(main, "get_user_name", AsyncMock(return_value="Анна"))
     monkeypatch.setattr(main, "is_group_member", AsyncMock(return_value=True))
+    from app import vk_api
+    monkeypatch.setattr(vk_api, "is_messages_allowed", AsyncMock(return_value=False))
+    monkeypatch.setattr(vk_api, "reply_to_wall_comment", AsyncMock())
     return client, sessions, sent
 
 
@@ -319,7 +322,7 @@ def test_migration_preserves_history_and_delivery_after_campaign_post_change(com
     with sessions() as session:
         assert (
             session.query(db.ProcessedComment).filter_by(comment_id=9).one().status
-            == "already_sent"
+            == "gift_reminded_wall"
         )
         assert (
             session.query(db.ProcessedComment).filter_by(comment_id=8).one().error

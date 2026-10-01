@@ -97,7 +97,8 @@ def test_queue_dedup_start_claim_and_delivery_history(invitations):
     client.post("/vk/callback", json=message("Начать"))
     assert sent.call_count == 1
     client.post("/vk/callback", json=comment(number=4))
-    assert replies.call_count == 1
+    assert replies.call_count == 2
+    assert "уже получили подарок" in replies.call_args.args[1]
     with sessions() as session:
         gift = session.query(db.PendingGift).one()
         assert gift.status == "sent" and gift.active_key is None

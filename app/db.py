@@ -188,6 +188,7 @@ class PromoDelivery(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(index=True)
     campaign_id: Mapped[int] = mapped_column(index=True)
+    promo_code: Mapped[str] = mapped_column(String(120), default="", server_default="")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -423,6 +424,7 @@ def init_db(
             "contact_details": "JSON NOT NULL DEFAULT '{}'",
         },
         "scenario_waits": {"expires_at": "TIMESTAMP"},
+        "promo_deliveries": {"promo_code": "VARCHAR(120) NOT NULL DEFAULT ''"},
         "scenarios": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "broadcasts": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "pending_gifts": {

@@ -262,7 +262,7 @@ class LivePort(JourneyPort):
         await self.emit(
             render(campaign.promo_message, variables), attachment=attachment
         )
-        self.session.add(PromoDelivery(user_id=self.user_id, campaign_id=campaign_id))
+        self.session.add(PromoDelivery(user_id=self.user_id, campaign_id=campaign_id, promo_code=campaign.promo_code))
         self.session.flush()
 
     async def handoff(self, message):

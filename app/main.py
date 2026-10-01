@@ -864,7 +864,8 @@ async def process_comment(comment: Comment) -> str:
         if one_promo_per_user:
             with SessionLocal() as session:
                 if delivered(session, user_id, campaign):
-                    update_status(event_key, "already_sent")
+                    from .gifts import remind_delivered_gift
+                    await remind_delivered_gift(session, comment, campaign)
                     return "ok"
 
         if campaign.delivery_mode == "chat_invite":
@@ -908,6 +909,10 @@ async def process_comment(comment: Comment) -> str:
         await send_message(
             user_id, text, random_id=random_id or 1, attachment=attachments
         )
+        with SessionLocal() as session:
+            from .db import PromoDelivery
+            session.add(PromoDelivery(user_id=user_id, campaign_id=campaign.id, promo_code=campaign.promo_code))
+            session.commit()
         update_status(event_key, "sent")
         logger.info("Promo sent: event=%s user=%s", event_key, user_id)
     except VkApiError as error:

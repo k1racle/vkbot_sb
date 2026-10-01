@@ -228,6 +228,50 @@ def random_id(key):
     )
 
 
+async def remind_delivered_gift(session, comment, campaign):
+    from .db import Client
+
+    record = session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
+    client = session.get(Client, comment.user_id)
+    if client and client.unsubscribed:
+        record.status = "gift_reminder_unavailable"
+        session.commit()
+        return
+    delivery = session.query(PromoDelivery).filter_by(
+        user_id=comment.user_id, campaign_id=campaign.id
+    ).order_by(PromoDelivery.id.desc()).first()
+    code = delivery.promo_code if delivery else ""
+    old_gift = session.query(PendingGift).filter_by(
+        user_id=comment.user_id, campaign_id=campaign.id, status="sent"
+    ).order_by(PendingGift.created_at.desc()).first()
+    prefix = "Спасибо за вашу активность 💚 Вы уже получили подарок по этой акции в нашем чате."
+    if code:
+        private = prefix + "\nЧтобы вам было удобно, повторяем ваш промокод: " + code
+    elif old_gift and old_gift.delivery_payload:
+        private = prefix + "\nПовторяем ранее отправленный подарок:\n" + old_gift.delivery_payload["text"]
+    else:
+        # Historical deliveries did not snapshot the code. Do not invent one.
+        private = prefix + "\nВаш промокод есть выше в переписке — воспользуйтесь им при оформлении заказа."
+    guid = hashlib.sha256(f"gift-reminder:{comment.event_key}".encode()).hexdigest()[:32]
+    if not (client and client.messages_allowed is False) and await vk_api.is_messages_allowed(comment.user_id):
+        try:
+            await vk_api.send_message(comment.user_id, private, random_id=random_id(guid))
+            record.status, record.error = "gift_reminded_dm", None
+            session.commit()
+            return
+        except vk_api.VkApiError as error:
+            if error.code not in {901, 902}:
+                raise
+    public = prefix + "\nПромокод сохранён в переписке. Вернуться в чат: " + resolve_chat_url(read_settings(session))
+    if comment.source_type == "wall":
+        await vk_api.reply_to_wall_comment(comment, public, guid=guid)
+        record.status, record.error = "gift_reminded_wall", None
+        session.commit()
+    elif not await mention_fallback(session, comment, public, guid, record, "gift_reminded_mention"):
+        record.status = "gift_reminder_unavailable"
+        session.commit()
+
+
 def gift_keyboard(label):
     return {
         "inline": True,
@@ -503,6 +547,7 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
                             },
                         ),
                         "attachment": attachment,
+                        "promo_code": campaign.promo_code,
                     }
                 await vk_api.send_message(
                     event.user_id,
@@ -514,7 +559,7 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
                 gift.status, gift.active_key, gift.error = "sent", None, ""
                 gift.awaiting_subscription = False
                 session.add(
-                    PromoDelivery(user_id=event.user_id, campaign_id=campaign.id)
+                    PromoDelivery(user_id=event.user_id, campaign_id=campaign.id, promo_code=gift.delivery_payload.get("promo_code", ""))
                 )
                 if record:
                     record.status, record.error = "sent", None
