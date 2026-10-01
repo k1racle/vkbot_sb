@@ -84,12 +84,12 @@ def test_queue_dedup_start_claim_and_delivery_history(invitations):
     assert "ALL" not in replies.call_args.args[1]  # No public promo code.
     for data in (comment(), comment(number=2), comment(object_id=595, number=3)):
         client.post("/vk/callback", json=data)
-    assert replies.call_count == 1
+    assert replies.call_count == 3
     with sessions() as session:
         gift = session.query(db.PendingGift).one()
         assert gift.status == "pending"
-        assert gift.invitation_text == replies.call_args.args[1]
-        assert gift.id == replies.call_args.kwargs["guid"]
+        assert gift.invitation_text == replies.call_args_list[0].args[1]
+        assert gift.id == replies.call_args_list[0].kwargs["guid"]
     db.init_db()  # Simulate an upgrade/restart: no in-memory pending state.
     client.post("/vk/callback", json=message("Начать"))
     assert sent.call_count == 1
@@ -97,7 +97,7 @@ def test_queue_dedup_start_claim_and_delivery_history(invitations):
     client.post("/vk/callback", json=message("Начать"))
     assert sent.call_count == 1
     client.post("/vk/callback", json=comment(number=4))
-    assert replies.call_count == 2
+    assert replies.call_count == 4
     assert "уже получили подарок" in replies.call_args.args[1]
     with sessions() as session:
         gift = session.query(db.PendingGift).one()
@@ -354,10 +354,10 @@ def test_public_reply_error_keeps_gift_and_does_not_flood(invitations):
     replies.side_effect = vk_api.VkApiError("15: Access denied")
     invite(client, sessions)
     client.post("/vk/callback", json=comment(number=2))
-    assert replies.call_count == 1
+    assert replies.call_count == 2
     with sessions() as session:
         assert (
-            session.query(db.ProcessedComment).filter_by(status="failed").count() == 1
+            session.query(db.ProcessedComment).filter_by(status="failed").count() == 2
         )
     client.post("/vk/callback", json=message("Подарок"))
     assert sent.call_args.args[1] == "Код ALL"
@@ -490,7 +490,7 @@ def test_parallel_comments_and_claims_do_not_duplicate(invitations, monkeypatch)
         await asyncio.gather(*requests)
 
     asyncio.run(dispatch([comment(number=1), comment(number=2)]))
-    assert replies.call_count == 1
+    assert replies.call_count == 2
     asyncio.run(dispatch([message("Подарок"), message("Подарок")]))
     assert sent.call_count == 1
     with sessions() as session:

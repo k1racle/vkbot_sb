@@ -21,7 +21,7 @@ def test_video_mention_when_dm_closed(invitations, monkeypatch, mode, status):
     assert client.post("/vk/callback", json=body).text == "ok"
     client.post("/vk/callback", json=body)
     client.post("/vk/callback", json=event("video", number=2))
-    assert mention.call_count == 1
+    assert mention.call_count == (2 if mode == "chat_invite" else 1)
     assert mention.call_args.args[1] == 456
     assert "https://vk.me/club123" in mention.call_args.args[2]
     sent.assert_not_called()

@@ -228,7 +228,7 @@ def random_id(key):
     )
 
 
-async def remind_delivered_gift(session, comment, campaign):
+async def remind_delivered_gift(session, comment, campaign, *, pending=False):
     from .db import Client
 
     record = session.query(ProcessedComment).filter_by(event_key=comment.event_key).one()
@@ -245,7 +245,10 @@ async def remind_delivered_gift(session, comment, campaign):
         user_id=comment.user_id, campaign_id=campaign.id, status="sent"
     ).order_by(PendingGift.created_at.desc()).first()
     prefix = "Спасибо за вашу активность 💚 Вы уже получили подарок по этой акции в нашем чате."
-    if code:
+    if pending:
+        prefix = "Спасибо за вашу активность 💚 Ваш подарок уже ждёт вас!"
+        private = prefix + "\nЗаберите его в чате: " + resolve_chat_url(read_settings(session)) + "\nНажмите «Начать» или напишите «Подарок»."
+    elif code:
         private = prefix + "\nЧтобы вам было удобно, повторяем ваш промокод: " + code
     elif old_gift and old_gift.delivery_payload:
         private = prefix + "\nПовторяем ранее отправленный подарок:\n" + old_gift.delivery_payload["text"]
@@ -256,18 +259,18 @@ async def remind_delivered_gift(session, comment, campaign):
     if not (client and client.messages_allowed is False) and await vk_api.is_messages_allowed(comment.user_id):
         try:
             await vk_api.send_message(comment.user_id, private, random_id=random_id(guid))
-            record.status, record.error = "gift_reminded_dm", None
+            record.status, record.error = "gift_pending_dm" if pending else "gift_reminded_dm", None
             session.commit()
             return
         except vk_api.VkApiError as error:
             if error.code not in {901, 902}:
                 raise
-    public = prefix + "\nПромокод сохранён в переписке. Вернуться в чат: " + resolve_chat_url(read_settings(session))
+    public = private if pending else prefix + "\nПромокод сохранён в переписке. Вернуться в чат: " + resolve_chat_url(read_settings(session))
     if comment.source_type == "wall":
         await vk_api.reply_to_wall_comment(comment, public, guid=guid)
-        record.status, record.error = "gift_reminded_wall", None
+        record.status, record.error = "gift_pending_wall" if pending else "gift_reminded_wall", None
         session.commit()
-    elif not await mention_fallback(session, comment, public, guid, record, "gift_reminded_mention"):
+    elif not await mention_fallback(session, comment, public, guid, record, "gift_pending_mention" if pending else "gift_reminded_mention"):
         record.status = "gift_reminder_unavailable"
         session.commit()
 
@@ -326,7 +329,10 @@ async def invite_to_chat(session, comment, campaign):
         )
         unavailable = previous is not None and previous.status == "video_waiting_chat"
         can_reply = comment.source_type == "wall" or vk_api.video_reply_available()
-        if gift.status != "pending" or not can_reply or not (rejected or unavailable):
+        if gift.status == "pending" and (not can_reply or not (rejected or unavailable)):
+            await remind_delivered_gift(session, comment, campaign, pending=True)
+            return
+        if gift.status != "pending":
             record.status = "invite_duplicate"
             session.commit()
             return
