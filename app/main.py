@@ -62,6 +62,7 @@ from .project_web import ProjectMiddleware, protect_admin_form
 from .project_web import router as project_router
 from .recycle import router as recycle_router
 from .scenario_api import router as scenario_router
+from .diagnostics import router as diagnostics_router, record_callback
 from .vk_api import (
     VkApiError,
     get_user_name,
@@ -96,6 +97,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(scenario_router)
+app.include_router(diagnostics_router)
 app.include_router(crm_router)
 app.include_router(project_router)
 app.include_router(recycle_router)
@@ -265,6 +267,8 @@ async def admin_page(
             "operator_trigger_words", settings.operator_trigger_words
         ),
         "operator_ack": values.get("operator_ack", settings.operator_ack),
+        "notify_contacts": as_bool(values.get("notify_contacts", "false")),
+        "notify_completed": as_bool(values.get("notify_completed", "false")),
     }
     campaign_form = {
         "id": selected_campaign.id if selected_campaign else "",
@@ -368,6 +372,8 @@ async def update_chat_settings(
     operator_user_id: str = Form(""),
     operator_trigger_words: str = Form(""),
     operator_ack: str = Form(""),
+    notify_contacts: str | None = Form(None),
+    notify_completed: str | None = Form(None),
     admin_test_user_id: str = Form(""),
 ):
     if not admin_required(request):
@@ -389,6 +395,8 @@ async def update_chat_settings(
                 "operator_trigger_words": operator_trigger_words.strip()
                 or settings.operator_trigger_words,
                 "operator_ack": operator_ack.strip() or settings.operator_ack,
+                "notify_contacts": "true" if notify_contacts else "false",
+                "notify_completed": "true" if notify_completed else "false",
                 "admin_test_user_id": admin_test_user_id.strip(),
             },
         )
@@ -701,6 +709,10 @@ async def vk_callback(request: Request) -> str:
     ):
         raise HTTPException(403, "Group does not match this callback")
 
+    selected_project = projects.current_project.get()
+    record_callback(
+        payload, paused=bool(selected_project and not selected_project.enabled)
+    )
     if payload.get("type") == "confirmation":
         return settings.vk_confirmation_code
     project = projects.current_project.get()

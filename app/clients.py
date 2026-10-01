@@ -228,6 +228,8 @@ def list_query(session, search="", contacted=False):
                 pattern, escape="\\"
             ),
             db.Client.phone.ilike(pattern, escape="\\"),
+            db.Client.email.ilike(pattern, escape="\\"),
+            db.Client.messenger.ilike(pattern, escape="\\"),
         ]
         if value.isascii() and value.isdigit() and len(value) < 11:
             terms.append(db.Client.user_id == int(value))
@@ -244,6 +246,9 @@ def serialize(client):
         "vk_url": f"https://vk.ru/id{client.user_id}",
         "phone": client.phone,
         "phone_source": client.phone_source,
+        "email": client.email,
+        "messenger": client.messenger,
+        "contact_details": client.contact_details or {},
         "tags": client.tags or [],
         "deactivated": client.deactivated,
         "bot_contacted_at": str(client.bot_contacted_at)

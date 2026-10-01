@@ -32,6 +32,7 @@ from .gifts import delivered, handle_gift_request
 from .operators import configured_operators, reset_handoff
 from .waits import cancel_waits, schedule_wait
 from .scenario_triggers import choose_scenario
+from .journey import JourneyPort
 
 logger = logging.getLogger(__name__)
 _locks = weakref.WeakValueDictionary()
@@ -88,7 +89,7 @@ def lock_conversation(session, user_id, *, wait=True):
     return True
 
 
-class LivePort:
+class LivePort(JourneyPort):
     def __init__(self, session, user_id, event_key, values, incoming_message_id=0):
         self.session, self.user_id, self.event_key, self.values = (
             session,
@@ -99,6 +100,7 @@ class LivePort:
         self.counter = 0
         self.warning = ""
         self.incoming_message_id = incoming_message_id
+        self.init_journey()
 
     def nonce(self, step):
         return hashlib.sha256(f"{self.event_key}:{step}".encode()).hexdigest()[:16]
@@ -153,10 +155,21 @@ class LivePort:
         return "answer"
 
     async def save_contact(self, kind, value):
-        if kind == "phone":
-            client = clients.ensure_client(self.session, self.user_id)
-            if client:
-                client.phone, client.phone_source = value, "dialog"
+        if kind not in {"phone", "email", "messenger"}:
+            return
+        client = clients.ensure_client(self.session, self.user_id)
+        if client:
+            setattr(client, kind, value)
+            if kind == "phone":
+                client.phone_source = "dialog"
+            client.contact_details = {
+                **(client.contact_details or {}),
+                kind: {
+                    "source": "dialog",
+                    "date": clients.now().isoformat() + "Z",
+                    **self.scenario_info,
+                },
+            }
 
     async def cancel_contact_wait(self, state, reason):
         cancel_waits(self.session, reason, user_id=self.user_id)
@@ -648,6 +661,7 @@ async def handle_message(payload, *, preferences_only=False):
                             }
                             # handoff notification reads the answers accumulated in this turn.
                             conversation.variables = state["variables"]
+                            port.bind_scenario(scenario)
                             await advance(
                                 scenario.published,
                                 state,
@@ -670,6 +684,7 @@ async def handle_message(payload, *, preferences_only=False):
                                 _stack=state.get("stack", []),
                             )
                             schedule_wait(session, conversation, state)
+                            await port.finish_notices()
                     else:
                         conversation.node_id = ""
                         if incoming:
@@ -688,6 +703,7 @@ async def handle_message(payload, *, preferences_only=False):
                                     keyboard={"one_time": False, "buttons": []},
                                 )
                 event.status, event.error = "done", port.warning
+                event.journey = port.journey
                 session.commit()
             except Exception as error:
                 session.rollback()
@@ -700,6 +716,7 @@ async def handle_message(payload, *, preferences_only=False):
                     text=str(message.get("text", ""))[:4000],
                 )
                 event.status, event.error = "failed", str(error)[:1000]
+                event.journey = port.journey
                 session.add(event)
                 session.commit()
                 raise

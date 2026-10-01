@@ -28,6 +28,9 @@ HEADERS = (
     "Профиль недоступен",
     "Обновление профиля (UTC)",
     "Добавлен (UTC)",
+    "Email",
+    "Мессенджер",
+    "Контакты: дата и источник",
 )
 
 
@@ -99,7 +102,9 @@ def client_workbook(search="", contacted=False):
             )
             for client in query.yield_per(500):
                 if count == 1048576:
-                    sheet.auto_filter.ref = f"A1:N{count}"
+                    sheet.auto_filter.ref = (
+                        f"A1:{get_column_letter(len(HEADERS))}{count}"
+                    )
                     number += 1
                     sheet, count = new_sheet(number), 1
                 sheet.append(
@@ -126,11 +131,19 @@ def client_workbook(search="", contacted=False):
                             "Да" if client.deactivated else "Нет",
                             client.profile_updated_at,
                             client.created_at,
+                            client.email,
+                            client.messenger,
+                            "; ".join(
+                                f"{kind}: {details.get('date', '')} {details.get('scenario', '')}"
+                                for kind, details in (
+                                    client.contact_details or {}
+                                ).items()
+                            ),
                         ),
                     )
                 )
                 count += 1
-        sheet.auto_filter.ref = f"A1:N{count}"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}{count}"
         workbook.save(output)
         output.seek(0)
         return output

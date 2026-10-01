@@ -417,6 +417,8 @@
     if (!['start', 'subflow', 'operator', 'end', 'return'].includes(n.type))
       html += '<p class="hint">Отдельный блок «Завершение» не обязателен: пустой переход заканчивает цепочку без дополнительного сообщения. Вопрос и сбор контакта сначала ждут ответ; ожидание — свой срок. Внутри подцепочки нужен «Возврат».</p>';
     if (n.type !== "start")
+      html += `<label class="check"><input type="checkbox" data-field="notify_manager" ${n.notify_manager ? 'checked' : ''}> Уведомить менеджеров, когда клиент дойдёт до этого блока</label><p class="hint">Получатели задаются в разделе «Общение». Уведомление отправляется после успешной обработки шага.</p>`;
+    if (n.type !== "start")
       html +=
         '<div class="inspector-footer button-row"><button id="duplicate-node" class="btn secondary small">Дублировать</button><button id="delete-node" class="btn danger small">Удалить блок</button></div>';
     $("block-inspector").innerHTML = html;

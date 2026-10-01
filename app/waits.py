@@ -125,6 +125,7 @@ async def worker_tick():
             if not claimed:
                 return
             job = session.get(db.ScenarioWait, ident)
+            port = None
             try:
                 row = session.get(db.Conversation, user_id)
                 scenario = session.get(db.Scenario, job.scenario_id)
@@ -210,6 +211,7 @@ async def worker_tick():
                 }
                 row.variables = variables
                 port = LivePort(session, user_id, event.event_key, values)
+                port.bind_scenario(scenario)
                 # Free the unique active slot before a following wait is scheduled.
                 job.status, job.active_user = "done", None
                 session.flush()
@@ -228,6 +230,8 @@ async def worker_tick():
                     _stack=state.get("stack", []),
                 )
                 schedule_wait(session, row, state)
+                await port.finish_notices()
+                event.journey = port.journey
                 event.status, event.error, job.error = "done", port.warning, ""
                 session.commit()
             except asyncio.CancelledError:
@@ -241,6 +245,8 @@ async def worker_tick():
                 job = session.get(db.ScenarioWait, ident)
                 if job is None or job.status != "pending":
                     return
+                if port is not None:
+                    event_for(session, job).journey = port.journey
                 job.attempts += 1
                 denied = isinstance(error, vk_api.VkApiError) and error.code in {
                     901,

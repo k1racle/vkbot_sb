@@ -169,6 +169,7 @@ class DialogEvent(Base):
     kind: Mapped[str] = mapped_column(String(32), default="incoming")
     gift_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
+    journey: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -199,7 +200,12 @@ class Client(Base):
     photo_url: Mapped[str] = mapped_column(Text, default="")
     phone: Mapped[str] = mapped_column(String(80), default="")
     phone_source: Mapped[str] = mapped_column(String(32), default="")
-    tags: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    email: Mapped[str] = mapped_column(String(254), default="", server_default="")
+    messenger: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    contact_details: Mapped[dict] = mapped_column(
+        JSON, default=dict, server_default=text("'{}'")
+    )
+    tags: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     deactivated: Mapped[bool] = mapped_column(default=False)
     bot_contacted_at: Mapped[object | None] = mapped_column(
         DateTime, nullable=True, index=True
@@ -410,7 +416,12 @@ def init_db(
                     )
     # Additive upgrade: keep existing dialogs and campaigns intact.
     for table, additions in {
-        "clients": {"tags": "JSON NOT NULL DEFAULT '[]'"},
+        "clients": {
+            "tags": "JSON NOT NULL DEFAULT '[]'",
+            "email": "VARCHAR(254) NOT NULL DEFAULT ''",
+            "messenger": "VARCHAR(500) NOT NULL DEFAULT ''",
+            "contact_details": "JSON NOT NULL DEFAULT '{}'",
+        },
         "scenario_waits": {"expires_at": "TIMESTAMP"},
         "scenarios": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "broadcasts": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
@@ -425,6 +436,7 @@ def init_db(
             "handoff_message_id": "BIGINT NOT NULL DEFAULT 0",
         },
         "dialog_events": {
+            "journey": "JSON NOT NULL DEFAULT '[]'",
             "kind": "VARCHAR(32) NOT NULL DEFAULT 'incoming'",
             "gift_id": "VARCHAR(32)",
         },

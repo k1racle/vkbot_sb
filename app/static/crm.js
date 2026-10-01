@@ -3,6 +3,12 @@
   const { api, escape: esc } = Admin;
   const $ = (id) => document.getElementById(id);
   const toast = (text) => Admin.toast(text);
+  function contactCards(c) {
+    return `<h3>Контакты для связи</h3>${Object.entries({phone: 'Телефон', email: 'Email', messenger: 'Мессенджер'}).map(([kind, label]) => {
+      const details = c.contact_details?.[kind];
+      return `<div class="contact-card"><label>${label}<input readonly value="${esc(c[kind] || '')}" placeholder="Не оставлен" aria-label="${label}"></label>${c[kind] ? `<button type="button" class="btn secondary small" data-copy-contact>Копировать ${label.toLowerCase()}</button><p class="hint">${details ? `Получен ${esc(Admin.moscowDate(details.date))} · ${esc(details.scenario || 'Диалог')}` : kind === 'phone' && c.phone_source === 'vk' ? 'Из профиля VK' : 'Ранее сохранённый контакт; дата получения неизвестна'}</p>` : ''}</div>`;
+    }).join('')}`;
+  }
   const statusNames = { draft: 'Черновик', queued: 'В очереди', running: 'Отправляется', paused: 'На паузе', cancelled: 'Отменена', completed: 'Завершена', pending: 'Ожидает', sending: 'Отправляется', sent: 'Доставлено VK', skipped: 'Пропущено', failed: 'Ошибка', done: 'Обработано' };
   const recipientWords = new Intl.PluralRules('ru');
   const recipients = (count) => `${count} ${({ one: 'получатель', few: 'получателя', many: 'получателей', other: 'получателя' })[recipientWords.select(count)]}`;
@@ -52,10 +58,18 @@
     }
     async function detail(id) {
       const d = await api(`/clients/${id}`), c = d.client;
-      $('crm-detail-body').innerHTML = `<div class="crm-person crm-person-large">${avatar(c)}<div><h3>${esc(name(c))}</h3><a href="${esc(c.vk_url)}" target="_blank" rel="noopener noreferrer">Открыть VK ${Admin.icon("external-link")}</a></div></div><dl class="crm-details"><dt>Метки</dt><dd>${(c.tags || []).map(t => `<span class="badge">${esc(t)}</span>`).join(" ") || "Нет меток"}</dd><dt>Телефон</dt><dd>${esc(c.phone || 'VK не передал номер')}</dd><dt>Последнее сообщение бота</dt><dd>${esc(date(c.bot_contacted_at))}</dd><dt>Данные профиля обновлены</dt><dd>${esc(date(c.profile_updated_at))}</dd><dt>Менеджер</dt><dd>${d.assigned_operator_id ? esc(d.assigned_operator_id) : d.handoff ? 'Ожидает менеджера' : 'Не назначен'}</dd><dt>Рассылки</dt><dd>${c.unsubscribed ? 'Клиент отписался' : 'Разрешение VK проверяется перед отправкой'}</dd></dl>${c.profile_error ? `<p class="crm-error">${esc(c.profile_error)}</p>` : ''}<div class="crm-actions"><a class="btn secondary small" href="${esc(Admin.projectPrefix)}/admin?section=dialogs">Открыть обращения</a>${!c.unsubscribed ? `<button class="btn secondary small" id="crm-unsubscribe" data-id="${c.user_id}">Исключить из рассылок</button>` : ''}</div><h3>Последние входящие сообщения</h3><div class="crm-events">${d.events.map((e) => `<article><small class="muted">${esc(date(e.date))} · ${esc(e.status)}</small><p>${esc(e.text || 'Служебное событие')}</p>${e.error ? `<small class="crm-error">${esc(e.error)}</small>` : ''}</article>`).join('') || '<p class="hint">Сохранённых сообщений пока нет.</p>'}</div><h3>Участие в рассылках</h3>${d.deliveries.map((r) => `<p>${badge(r.status)} ${esc(date(r.date))} <span class="hint">${esc(r.error)}</span></p>`).join('') || '<p class="hint">Ещё не участвовал.</p>'}`;
+      $('crm-detail-body').innerHTML = `<div class="crm-person crm-person-large">${avatar(c)}<div><h3>${esc(name(c))}</h3><a href="${esc(c.vk_url)}" target="_blank" rel="noopener noreferrer">Открыть VK ${Admin.icon("external-link")}</a></div></div><dl class="crm-details"><dt>Метки</dt><dd>${(c.tags || []).map(t => `<span class="badge">${esc(t)}</span>`).join(" ") || "Нет меток"}</dd><dt>Последнее сообщение бота</dt><dd>${esc(date(c.bot_contacted_at))}</dd><dt>Данные профиля обновлены</dt><dd>${esc(date(c.profile_updated_at))}</dd><dt>Менеджер</dt><dd>${d.assigned_operator_id ? esc(d.assigned_operator_id) : d.handoff ? 'Ожидает менеджера' : 'Не назначен'}</dd><dt>Рассылки</dt><dd>${c.unsubscribed ? 'Клиент отписался' : 'Разрешение VK проверяется перед отправкой'}</dd></dl>${c.profile_error ? `<p class="crm-error">${esc(c.profile_error)}</p>` : ''}<div class="crm-actions"><a class="btn secondary small" href="${esc(Admin.projectPrefix)}/admin?section=dialogs">Открыть обращения</a>${!c.unsubscribed ? `<button class="btn secondary small" id="crm-unsubscribe" data-id="${c.user_id}">Исключить из рассылок</button>` : ''}</div>${contactCards(c)}<h3>Последние входящие сообщения и сценарии</h3><div class="crm-events">${d.events.map((e) => `<article><small class="muted">${esc(Admin.moscowDate(e.date))} · ${esc(statusNames[e.status] || e.status)}</small><p>${esc(e.text || 'Служебное событие')}</p>${Admin.journey(e.journey)}${e.error ? `<small class="crm-error">${esc(e.error)}</small>` : ''}</article>`).join('') || '<p class="hint">Сохранённых сообщений пока нет.</p>'}</div><h3>Участие в рассылках</h3>${d.deliveries.map((r) => `<p>${badge(r.status)} ${esc(date(r.date))} <span class="hint">${esc(r.error)}</span></p>`).join('') || '<p class="hint">Ещё не участвовал.</p>'}`;
       if (!$('crm-detail').open) $('crm-detail').showModal();
     }
     $('crm-detail-body').addEventListener('click', (e) => {
+      const copy = e.target.closest('[data-copy-contact]');
+      if (copy) {
+        const value = copy.closest('.contact-card').querySelector('input');
+        value.select();
+        if (navigator.clipboard) navigator.clipboard.writeText(value.value).then(() => toast('Контакт скопирован')).catch(() => toast('Выделено — нажмите Ctrl+C'));
+        else toast('Выделено — нажмите Ctrl+C');
+        return;
+      }
       const b = e.target.closest('#crm-unsubscribe');
       if (b && confirm('Исключить клиента из будущих рассылок? Обычные ответы бота сохранятся.')) request(b, async () => { await api(`/clients/${b.dataset.id}/unsubscribe`, 'POST'); await detail(b.dataset.id); await load(); });
     });

@@ -126,6 +126,7 @@ def client_detail(user_id: int):
                     "kind": e.kind,
                     "date": str(e.created_at),
                     "error": e.error,
+                    "journey": e.journey or [],
                 }
                 for e in session.query(db.DialogEvent)
                 .filter_by(user_id=user_id)

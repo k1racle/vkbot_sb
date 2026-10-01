@@ -478,6 +478,7 @@ def conversations():
                         "kind": e.kind,
                         "error": e.error,
                         "date": str(e.created_at),
+                        "journey": e.journey or [],
                     }
                     for e in session.query(DialogEvent)
                     .filter_by(user_id=c.user_id)

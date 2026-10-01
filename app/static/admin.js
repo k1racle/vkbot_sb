@@ -1,5 +1,16 @@
 /* Shared, dependency-free admin UI. */
 window.Admin = {
+  moscowDate(value) {
+    if (!value) return '—';
+    const normalized = /(?:Z|[+-]\d\d:\d\d)$/.test(value) ? value : value.replace(' ', 'T') + 'Z';
+    return new Date(normalized).toLocaleString('ru-RU', {timeZone: 'Europe/Moscow'}) + ' МСК';
+  },
+  journey(items) {
+    if (!items?.length) return '';
+    const labels = {input: 'Ответ / событие', entered: 'Вход в блок', waiting: 'Ожидание', completed: 'Сценарий завершён', handoff: 'Передано менеджеру', error: 'Ошибка выполнения'};
+    const types = {start: 'Начало', message: 'Сообщение', question: 'Вопрос', contact: 'Контакты', condition: 'Условие', phone_condition: 'Телефон указан?', end: 'Завершение', operator: 'Менеджер', promo: 'Промокод', wait: 'Ожидание', wait_reply: 'Ожидание ответа', set_variable: 'Запись ответа', variable_condition: 'Проверка ответа', random: 'Случайный ответ', schedule: 'Расписание', tag: 'Метка', tag_condition: 'Проверка метки', call_subflow: 'Вызов подцепочки', subflow: 'Подцепочка', return: 'Возврат'};
+    return `<details class="journey"><summary>Прохождение сценария · ${Admin.escape(items[0].scenario || 'Сценарий')} · версия ${Admin.escape(items[0].version || '—')}</summary><ol>${items.map(s => `<li><small class="muted">${Admin.escape(Admin.moscowDate(s.date))}</small><div><strong>${Admin.escape(labels[s.phase] || s.phase)}</strong>${s.node ? ' · ' + Admin.escape(s.node === 'Блок' ? types[s.type] || s.node : s.node) : ''}</div>${s.detail ? `<p>${Admin.escape(s.detail)}</p>` : ''}</li>`).join('')}</ol></details>`;
+  },
   get projectPrefix() {
     return document.body.dataset.projectPrefix || "";
   },
@@ -286,7 +297,7 @@ async function loadClients() {
                 .map(([k, v]) => `<p><strong>${e(k)}:</strong> ${e(v)}</p>`)
                 .join(
                   "",
-                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(m.date)} · ${m.kind === "wait" ? "Таймер сценария" : m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "retry" ? "Повторная попытка" : m.status === "cancelled" ? "Отменено" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
+                )}</details><details open><summary>Сообщения и обращения</summary>${c.events.map((m) => `<div class="event-message">${e(m.text) || "[без текста]"}<div class="hint">${e(Admin.moscowDate(m.date))} · ${m.kind === "wait" ? "Таймер сценария" : m.kind === "operator_reply" ? "Ответ менеджера" : m.kind === "operator_claim" ? "Взять в работу" : m.kind === "gift_join" ? "Выдача после подписки" : m.kind === "gift" ? "Получение подарка" : "Входящее"} · ${m.status === "failed" ? "Ошибка" : m.status === "retry" ? "Повторная попытка" : m.status === "cancelled" ? "Отменено" : m.status === "waiting_permission" ? "Ждём разрешение" : "Обработано"}</div>${Admin.journey(m.journey)}${m.error ? `<div class="notice error">${e(m.error)}</div>` : ""}</div>`).join("")}</details></article>`,
           )
           .join("")
       : `<div class="panel empty"><h2>Диалоги ещё не начались</h2><p>Опубликуйте сценарий и напишите сообществу в VK. Здесь появятся клиенты и их обращения.</p><a class="btn secondary" href="${e(Admin.projectPrefix)}/admin?section=scenarios">Открыть сценарии</a></div>`;
@@ -346,3 +357,19 @@ if (document.getElementById("clients-list")) {
   loadClients();
   document.getElementById("refresh-clients").onclick = loadClients;
 }
+
+const diagnosticButton = document.getElementById('check-vk');
+if (diagnosticButton) diagnosticButton.onclick = async () => {
+  const output = document.getElementById('vk-diagnostics');
+  diagnosticButton.disabled = true;
+  output.textContent = 'Проверяем подключение к VK…';
+  try {
+    const report = await Admin.api('/vk-diagnostics', 'POST');
+    const e = Admin.escape, labels = {ok: '✓', warning: 'Проверить', error: 'Ошибка'};
+    output.innerHTML = `<p class="hint">Проверено: ${e(Admin.moscowDate(report.checked_at))}</p><p><strong>Последнее событие от VK:</strong> ${report.last_callback ? `${e(Admin.moscowDate(report.last_callback.date))} · ${e(report.last_callback.type)}<br>${e(report.last_callback.reason)}` : 'Пока не зарегистрировано. После обновления оставьте новый комментарий или напишите сообществу.'}</p><div class="table-wrap"><table><thead><tr><th>Проверка</th><th>Результат</th><th>Подробности</th></tr></thead><tbody>${report.checks.map(c => `<tr><td>${e(c.name)}</td><td>${e(labels[c.status])}</td><td>${e(c.detail)}</td></tr>`).join('')}</tbody></table></div><p class="hint">Проверка прав не публикует пробный ответ. Для окончательной проверки оставьте новый тестовый комментарий.</p>`;
+  } catch (error) {
+    output.textContent = error.message;
+  } finally {
+    diagnosticButton.disabled = false;
+  }
+};

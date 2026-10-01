@@ -234,7 +234,7 @@ def test_excel_all_rows_filters_types_and_group_isolation(two_projects):
     sheet = book["Клиенты"]
     assert book.sheetnames == ["Клиенты", "О выгрузке"]
     assert sheet.max_row == 68 and sheet.freeze_panes == "A2"
-    assert sheet.auto_filter.ref == "A1:N68"
+    assert sheet.auto_filter.ref == "A1:Q68"
     rows = {row[0].value: row for row in list(sheet.rows)[1:]}
     assert rows["99"][1].data_type == "s" and rows["99"][1].value.startswith(
         "=HYPERLINK"

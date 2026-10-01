@@ -108,6 +108,7 @@ class Node(BaseModel):
         default=None, min_length=1, max_length=3
     )
     contact_requirement: Literal["any", "all"] = "any"
+    notify_manager: bool = False
     phone_check_mode: Literal["provided", "any"] = "provided"
     allow_skip: bool = True
     error_text: str = Field(default="", max_length=500)
@@ -676,10 +677,45 @@ async def accept_contact(node, state, text, payload, port, *, resume_wait=False)
             if node.get("contact_types"):
                 variables[f"{node['variable']}_{kind}"] = value
             await port.save_contact(kind, value)
+        if hasattr(port, "contacts_received"):
+            await port.contacts_received(node, values, variables)
     return True
 
 
 async def advance(
+    graph, state, text, payload, port, *, restart=False, resume_wait=False
+):
+    """Record execution outcomes without changing the offline simulator contract."""
+
+    async def trace(phase, node=None, detail=""):
+        if hasattr(port, "trace"):
+            await port.trace(phase, node, detail)
+
+    nodes = {n["id"]: n for n in graph["nodes"]}
+    await trace(
+        "input",
+        nodes.get(state.get("node_id")),
+        "Таймер" if resume_wait else text[:1000],
+    )
+    try:
+        await _advance(
+            graph, state, text, payload, port, restart=restart, resume_wait=resume_wait
+        )
+    except Exception:
+        await trace(
+            "error",
+            nodes.get(state.get("node_id")),
+            "Выполнение прервано; подробности в событии",
+        )
+        raise
+    current = nodes.get(state.get("node_id"))
+    phase = "handoff" if state.get("handoff") else "waiting" if current else "completed"
+    await trace(phase, current)
+    if phase == "completed" and hasattr(port, "scenario_completed"):
+        await port.scenario_completed(state["variables"])
+
+
+async def _advance(
     graph, state, text, payload, port, *, restart=False, resume_wait=False
 ):
     """Mutates a serializable state; all external effects go through port."""
@@ -794,6 +830,8 @@ async def advance(
     for step in range(101):
         state["node_id"] = current["id"]
         kind = current["type"]
+        if current["id"] and hasattr(port, "trace"):
+            await port.trace("entered", current, variables=variables)
         if kind == "call_subflow":
             stack = state.setdefault("stack", [])
             if len(stack) >= MAX_CALL_DEPTH:
