@@ -218,6 +218,10 @@ def delivered(session, user_id, campaign):
         .filter_by(user_id=user_id, campaign_id=campaign.id, status="sent")
         .first()
         is not None
+        or session.query(PendingGift)
+        .filter_by(user_id=user_id, campaign_id=campaign.id, status="sent")
+        .first()
+        is not None
     )
 
 
@@ -244,6 +248,9 @@ async def remind_delivered_gift(session, comment, campaign, *, pending=False):
     old_gift = session.query(PendingGift).filter_by(
         user_id=comment.user_id, campaign_id=campaign.id, status="sent"
     ).order_by(PendingGift.created_at.desc()).first()
+    # A stale pending record must never override a confirmed delivery.
+    if pending and delivered(session, comment.user_id, campaign):
+        pending = False
     prefix = "Спасибо за вашу активность 💚 Вы уже получили подарок по этой акции в нашем чате."
     if pending:
         prefix = "Спасибо за вашу активность 💚 Ваш подарок уже ждёт вас!"
