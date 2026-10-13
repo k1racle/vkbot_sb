@@ -1,0 +1,15 @@
+{% if campaign_form.id and campaign_form.delivery_mode == 'safe' %}
+<div class="panel spaced">
+  <h3>Участники сейфа <span class="badge">{{ safe_attempts|length }}</span></h3>
+  <p>{{ 'Победитель подтверждён. Главный приз закреплён за одним участником.' if campaign_form.safe_winner_id else 'Главный приз пока не подтверждён. Участник проверяет свой код кнопкой в сообщениях.' }}</p>
+  {% if campaign_form.safe_notification_error %}<p class="error-cell">Приз закреплён, но сообщение о победе ещё не доставлено: {{ campaign_form.safe_notification_error }}. Участник может повторно нажать «Проверить код».</p>{% endif %}
+  <div class="table-wrap"><table><thead><tr><th>Комментарий</th><th>Время (Москва)</th><th>Участник</th><th>Первый код</th><th>Результат</th><th>Бонус</th><th>Доставка</th></tr></thead><tbody>
+  {% for a in safe_attempts %}<tr>
+    <td><a href="https://vk.com/wall-{{ request.state.project.group_id }}_{{ campaign_form.post_id }}?reply={{ a.comment_id }}" target="_blank" rel="noopener">#{{ a.comment_id }}</a></td>
+    <td>{{ a.published_at|safe_time }}</td><td><a href="https://vk.com/id{{ a.user_id }}" target="_blank" rel="noopener">{{ a.user_id }}</a></td><td>{{ a.code }}</td>
+    <td>{% if a.id == campaign_form.safe_winner_id %}🏆 Победитель{% elif a.invalid_reason %}{{ {'edited':'Комментарий изменён', 'deleted':'Комментарий удалён'}.get(a.invalid_reason, a.invalid_reason) }}{% elif a.code == campaign_form.safe_code %}{{ 'Главный приз уже разыгран' if campaign_form.safe_winner_id else 'Верный код — ожидает проверки' }}{% else %}Код не подошёл{% endif %}</td>
+    <td>{{ 'Отправлен' if a.bonus_sent else 'Не получен' }}</td><td class="error-cell">{{ a.error or ('Приглашение в личку отправлено' if a.invitation_sent else 'Вход через комментарий / команду «Сейф»') }}</td>
+  </tr>{% else %}<tr><td colspan="7" class="empty">Пока нет попыток.</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+{% endif %}

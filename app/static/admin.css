@@ -506,6 +506,13 @@ input[type="checkbox"] {
   gap: 22px;
   align-items: start;
 }
+.campaign-layout > * {
+  min-width: 0;
+}
+.campaign-layout select {
+  min-width: 0;
+  max-width: 100%;
+}
 .campaign-list {
   padding: 20px 13px;
 }

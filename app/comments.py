@@ -42,6 +42,7 @@ class Comment:
     comment_id: int
     user_id: int
     text: str
+    published_at: int = 0
 
     @property
     def event_key(self):
@@ -72,4 +73,5 @@ def normalize_comment(payload, group_id):
         comment_id,
         user_id,
         str(obj.get("text") or "").strip(),
+        integer(obj.get("date")),
     )

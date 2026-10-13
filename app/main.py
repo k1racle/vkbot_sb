@@ -23,7 +23,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import broadcasts, clients, projects
+from . import broadcasts, clients, projects, safes
 from .comments import Comment, normalize_comment
 from .config import SettingsProxy
 from .crm_api import router as crm_router
@@ -32,6 +32,7 @@ from .db import (
     DialogEvent,
     PendingGift,
     ProcessedComment,
+    SafeAttempt,
     SessionLocal,
     already_processed,
     read_settings,
@@ -88,6 +89,7 @@ def interaction_time(value):
 
 
 templates.env.filters["interaction_time"] = interaction_time
+templates.env.filters["safe_time"] = safes.display_time
 # SessionMiddleware must be outside ProjectMiddleware: it supplies owner auth.
 app.add_middleware(ProjectMiddleware)
 app.add_middleware(
@@ -248,6 +250,14 @@ async def admin_page(
         )
         if selected_campaign and selected_campaign.is_deleted:
             selected_campaign = None
+        safe_attempts = (
+            session.query(SafeAttempt)
+            .filter_by(campaign_id=selected_campaign.id)
+            .order_by(SafeAttempt.published_at, SafeAttempt.comment_id)
+            .all()
+            if selected_campaign and selected_campaign.delivery_mode == "safe"
+            else []
+        )
     form = {
         "chat_url": values.get("chat_url", ""),
         "video_mention_post_id": values.get("video_mention_post_id", ""),
@@ -273,6 +283,23 @@ async def admin_page(
         "notify_completed": as_bool(values.get("notify_completed", "false")),
     }
     campaign_form = {
+        "safe_code": selected_campaign.safe_code if selected_campaign else "",
+        "safe_start_at": safes.local_date(selected_campaign.safe_start_at)
+        if selected_campaign
+        else "",
+        "safe_end_at": safes.local_date(selected_campaign.safe_end_at)
+        if selected_campaign
+        else "",
+        "safe_locked": selected_campaign.safe_locked if selected_campaign else False,
+        "safe_messages": safes.messages(selected_campaign)
+        if selected_campaign
+        else safes.DEFAULT_MESSAGES,
+        "safe_winner_id": selected_campaign.safe_winner_id
+        if selected_campaign
+        else None,
+        "safe_notification_error": selected_campaign.safe_notification_error
+        if selected_campaign
+        else "",
         "id": selected_campaign.id if selected_campaign else "",
         "post_id": (selected_campaign.post_id or "") if selected_campaign else "",
         "title": selected_campaign.title if selected_campaign else "",
@@ -309,9 +336,11 @@ async def admin_page(
             "csrf": request.session["csrf"],
             "form": form,
             "campaign_form": campaign_form,
+            "safe_attempts": safe_attempts,
             "invitation_defaults": {
                 "gift": DEFAULT_INVITATIONS,
                 "chat": DEFAULT_CHAT_INVITATIONS,
+                "safe": safes.DEFAULT_INVITATIONS,
             },
             "stats": {
                 "total": total,
@@ -358,7 +387,9 @@ async def update_admin_settings(
             if "chat_url" in submitted:
                 values_to_save["chat_url"] = validate_chat_url(chat_url)
             if "video_mention_post_id" in submitted:
-                values_to_save["video_mention_post_id"] = validate_mention_post(video_mention_post_id)
+                values_to_save["video_mention_post_id"] = validate_mention_post(
+                    video_mention_post_id
+                )
         except ValueError:
             return RedirectResponse(
                 "/admin?section=settings&settings_error=chat_url",
@@ -435,6 +466,13 @@ async def save_campaign(
     attachment: UploadFile | None = File(None),
     campaign_id: str = Form(""),
     remove_attachment: str | None = Form(None),
+    safe_code: str = Form(""),
+    safe_start_at: str = Form(""),
+    safe_end_at: str = Form(""),
+    safe_invitation: str = Form(safes.DEFAULT_MESSAGES["invitation"]),
+    safe_wrong: str = Form(safes.DEFAULT_MESSAGES["wrong"]),
+    safe_winner: str = Form(safes.DEFAULT_MESSAGES["winner"]),
+    safe_later: str = Form(safes.DEFAULT_MESSAGES["later"]),
 ):
     if not admin_required(request):
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -444,9 +482,9 @@ async def save_campaign(
         else list(invitation_defaults(delivery_mode))
     )
     if (
-        delivery_mode not in {"direct", "chat_invite", "chat_only"}
+        delivery_mode not in {"direct", "chat_invite", "chat_only", "safe"}
         or (
-            delivery_mode in {"chat_invite", "chat_only"}
+            delivery_mode in {"chat_invite", "chat_only", "safe"}
             and (
                 not 1 <= len(variants) <= 10
                 or any(
@@ -477,12 +515,85 @@ async def save_campaign(
             "/admin?section=campaigns&campaign_error=post_id", status_code=303
         )
     post_id = int(entered_post_id) if entered_post_id else 0
+    safe_texts = {
+        "invitation": safe_invitation.strip(),
+        "wrong": safe_wrong.strip(),
+        "winner": safe_winner.strip(),
+        "later": safe_later.strip(),
+    }
+    start_at = end_at = None
+    if delivery_mode == "safe":
+        try:
+            raw_form = await request.form()
+            if any(
+                key in raw_form and not str(raw_form[key]).strip()
+                for key in (
+                    "safe_invitation",
+                    "safe_wrong",
+                    "safe_winner",
+                    "safe_later",
+                )
+            ):
+                raise ValueError()
+            start_at, end_at = (
+                safes.parse_date(safe_start_at),
+                safes.parse_date(safe_end_at),
+            )
+            if (
+                not post_id
+                or not safes.valid_code(safe_code)
+                or end_at <= start_at
+                or any(not value or len(value) > 3000 for value in safe_texts.values())
+            ):
+                raise ValueError()
+        except ValueError:
+            return RedirectResponse(
+                "/admin?section=campaigns&campaign_error=safe_settings", status_code=303
+            )
     with SessionLocal() as session:
         campaign = (
-            session.get(Campaign, int(campaign_id)) if campaign_id.isdigit() else None
+            session.query(Campaign)
+            .filter_by(id=int(campaign_id))
+            .with_for_update()
+            .first()
+            if campaign_id.isdigit()
+            else None
         )
         if campaign_id and (campaign is None or campaign.is_deleted):
             raise HTTPException(404, "Кампания не найдена в этом проекте")
+        if (
+            campaign
+            and campaign.safe_locked
+            and (
+                delivery_mode != "safe"
+                or post_id != campaign.post_id
+                or safe_code != campaign.safe_code
+                or start_at != campaign.safe_start_at
+                or end_at != campaign.safe_end_at
+                or safe_texts != safes.messages(campaign)
+            )
+        ):
+            return RedirectResponse(
+                f"/admin?section=campaigns&campaign_id={campaign.id}&campaign_error=safe_locked",
+                status_code=303,
+            )
+        if delivery_mode == "safe" and (not campaign or not campaign.safe_locked):
+            if enabled and start_at <= safes.now():
+                return RedirectResponse(
+                    "/admin?section=campaigns&campaign_error=safe_future",
+                    status_code=303,
+                )
+            if (
+                campaign
+                and campaign.delivery_mode != "safe"
+                and session.query(ProcessedComment)
+                .filter_by(campaign_id=campaign.id)
+                .first()
+            ):
+                return RedirectResponse(
+                    "/admin?section=campaigns&campaign_error=safe_history",
+                    status_code=303,
+                )
         duplicate = session.query(Campaign).filter_by(post_id=post_id).first()
         if duplicate and (not campaign or duplicate.id != campaign.id):
             return RedirectResponse(
@@ -511,6 +622,17 @@ async def save_campaign(
         campaign.delivery_mode = delivery_mode
         campaign.public_reply_variants = variants
         campaign.enabled = bool(enabled)
+        if delivery_mode == "safe":
+            campaign.safe_code, campaign.safe_start_at, campaign.safe_end_at = (
+                safe_code,
+                start_at,
+                end_at,
+            )
+            campaign.safe_messages = safe_texts
+            campaign.safe_locked = bool(campaign.safe_locked or enabled)
+            campaign.one_promo_per_user = True
+        if campaign.safe_locked:
+            campaign.safe_revision = Campaign.safe_revision + 1 if campaign.id else 1
         if delivery_mode == "chat_only":
             # Old unclaimed gifts must not leak into the new no-gift workflow.
             pending_keys = session.query(PendingGift.event_key).filter_by(
@@ -606,6 +728,14 @@ async def toggle_campaign(request: Request, campaign_id: int):
     with SessionLocal() as session:
         campaign = session.get(Campaign, campaign_id)
         if campaign and not campaign.is_deleted:
+            if campaign.delivery_mode == "safe" and not campaign.safe_locked:
+                if not campaign.safe_start_at or campaign.safe_start_at <= safes.now():
+                    return RedirectResponse(
+                        f"/admin?section=campaigns&campaign_id={campaign.id}&campaign_error=safe_future",
+                        status_code=303,
+                    )
+                campaign.safe_locked = True
+            campaign.safe_revision = Campaign.safe_revision + 1
             campaign.enabled = not campaign.enabled
             session.commit()
     return RedirectResponse(
@@ -642,6 +772,16 @@ async def test_send(request: Request):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
+        if campaign.delivery_mode == "safe":
+            await send_message(
+                user_id,
+                "Тест «Сейф». " + safes.messages(campaign)["invitation"],
+                random_id=secrets.randbelow(2147483646) + 1,
+            )
+            return RedirectResponse(
+                f"/admin?section=campaigns&campaign_id={campaign.id}&test_sent=1",
+                status_code=303,
+            )
         if campaign.delivery_mode == "chat_only":
             # Test the invitation in a permitted DM; never publish a test comment
             # or start a live scenario on behalf of the recipient.
@@ -764,6 +904,11 @@ async def vk_callback(request: Request) -> str:
                         )
                     session.commit()
         return "ok"
+    handled, safe_attempt_id = safes.register_comment(payload)
+    if handled:
+        if safe_attempt_id:
+            await safes.send_invitation(safe_attempt_id)
+        return "ok"
     comment = normalize_comment(payload, settings.vk_group_id)
     if comment is None:
         return "ok"
@@ -822,6 +967,11 @@ async def process_comment(comment: Comment) -> str:
         if campaign is not None and not campaign.enabled:
             update_status(event_key, "campaign_disabled")
             return "ok"
+        if campaign.delivery_mode == "safe":
+            # Only the dedicated safe handler can register/award a safe entry.
+            # Incomplete or unsupported events must never fall through to promos.
+            update_status(event_key, "safe_invalid_event")
+            return "ok"
         test_enabled = as_bool(setting(values, "test_mode", settings.test_mode))
         test_phrase = (
             str(setting(values, "test_trigger_phrase", settings.test_trigger_phrase))
@@ -865,6 +1015,7 @@ async def process_comment(comment: Comment) -> str:
             with SessionLocal() as session:
                 if delivered(session, user_id, campaign):
                     from .gifts import remind_delivered_gift
+
                     await remind_delivered_gift(session, comment, campaign)
                     return "ok"
 
@@ -911,7 +1062,14 @@ async def process_comment(comment: Comment) -> str:
         )
         with SessionLocal() as session:
             from .db import PromoDelivery
-            session.add(PromoDelivery(user_id=user_id, campaign_id=campaign.id, promo_code=campaign.promo_code))
+
+            session.add(
+                PromoDelivery(
+                    user_id=user_id,
+                    campaign_id=campaign.id,
+                    promo_code=campaign.promo_code,
+                )
+            )
             session.commit()
         update_status(event_key, "sent")
         logger.info("Promo sent: event=%s user=%s", event_key, user_id)

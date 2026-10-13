@@ -25,6 +25,7 @@ def remove_campaign(session, item):
     # Retain the campaign ID for history while freeing its UNIQUE post binding.
     item.post_id = -item.id
     item.is_deleted, item.enabled = True, False
+    item.safe_revision = db.Campaign.safe_revision + 1
     session.query(db.PendingGift).filter_by(
         campaign_id=item.id, status="pending"
     ).update(

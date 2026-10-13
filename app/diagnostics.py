@@ -16,6 +16,9 @@ router = APIRouter(prefix="/admin/api", dependencies=[Depends(authorize)])
 EVENTS = {
     "message_new": "Входящие сообщения",
     "wall_reply_new": "Комментарии к постам",
+    "wall_reply_edit": "Изменения комментариев (Сейф)",
+    "wall_reply_delete": "Удаления комментариев (Сейф)",
+    "wall_reply_restore": "Восстановления комментариев (Сейф)",
     "video_comment_new": "Комментарии к видео",
     "group_join": "Вступление в сообщество",
     "message_allow": "Разрешение сообщений",

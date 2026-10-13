@@ -76,9 +76,59 @@ class Campaign(Base):
     min_comment_length: Mapped[int] = mapped_column(Integer, default=1)
     one_promo_per_user: Mapped[bool] = mapped_column(default=True)
     delivery_mode: Mapped[str] = mapped_column(String(24), default="direct")
+    safe_code: Mapped[str] = mapped_column(String(4), default="", server_default="")
+    safe_start_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    safe_end_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    safe_locked: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
+    safe_revision: Mapped[int] = mapped_column(default=0, server_default="0")
+    safe_messages: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    safe_finalized_at: Mapped[object | None] = mapped_column(DateTime, nullable=True)
+    safe_winner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    safe_notification_sent: Mapped[bool] = mapped_column(
+        default=False, server_default=text("FALSE")
+    )
+    safe_notification_error: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
     public_reply_variants: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
+
+
+class SafeComment(Base):
+    """Original callback evidence, including edit/delete tombstones received first."""
+
+    __tablename__ = "safe_comments"
+    __table_args__ = (UniqueConstraint("campaign_id", "comment_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(index=True)
+    comment_id: Mapped[int] = mapped_column()
+    user_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    published_at: Mapped[int] = mapped_column(BigInteger, default=0)
+    original_text: Mapped[str] = mapped_column(Text, default="")
+    original_seen: Mapped[bool] = mapped_column(default=False)
+    invalid_reason: Mapped[str] = mapped_column(String(32), default="")
+
+
+class SafeAttempt(Base):
+    __tablename__ = "safe_attempts"
+    __table_args__ = (UniqueConstraint("campaign_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    comment_id: Mapped[int] = mapped_column()
+    published_at: Mapped[int] = mapped_column(BigInteger)
+    code: Mapped[str] = mapped_column(String(4))
+    invalid_reason: Mapped[str] = mapped_column(String(32), default="")
+    public_sent: Mapped[bool] = mapped_column(default=False)
+    invitation_sent: Mapped[bool] = mapped_column(default=False)
+    bonus_sent: Mapped[bool] = mapped_column(default=False)
+    bonus_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
 
 
 class PendingGift(Base):
@@ -168,6 +218,7 @@ class DialogEvent(Base):
     status: Mapped[str] = mapped_column(String(32), default="processing")
     kind: Mapped[str] = mapped_column(String(32), default="incoming")
     gift_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    safe_attempt_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
     journey: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
@@ -408,6 +459,16 @@ def init_db(
             "one_promo_per_user": "BOOLEAN DEFAULT TRUE",
             "delivery_mode": "VARCHAR(24) NOT NULL DEFAULT 'direct'",
             "public_reply_variants": "JSON NOT NULL DEFAULT '[]'",
+            "safe_code": "VARCHAR(4) NOT NULL DEFAULT ''",
+            "safe_start_at": "TIMESTAMP",
+            "safe_end_at": "TIMESTAMP",
+            "safe_locked": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "safe_revision": "INTEGER NOT NULL DEFAULT 0",
+            "safe_messages": "JSON NOT NULL DEFAULT '{}'",
+            "safe_finalized_at": "TIMESTAMP",
+            "safe_winner_id": "INTEGER",
+            "safe_notification_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "safe_notification_error": "TEXT NOT NULL DEFAULT ''",
         }
         with engine.begin() as connection:
             for column, definition in additions.items():
@@ -438,6 +499,7 @@ def init_db(
             "handoff_message_id": "BIGINT NOT NULL DEFAULT 0",
         },
         "dialog_events": {
+            "safe_attempt_id": "INTEGER",
             "journey": "JSON NOT NULL DEFAULT '[]'",
             "kind": "VARCHAR(32) NOT NULL DEFAULT 'incoming'",
             "gift_id": "VARCHAR(32)",

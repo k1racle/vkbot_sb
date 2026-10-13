@@ -234,7 +234,7 @@ class LivePort(JourneyPort):
             not campaign
             or campaign.is_deleted
             or not campaign.enabled
-            or campaign.delivery_mode == "chat_only"
+            or campaign.delivery_mode in {"chat_only", "safe"}
         ):
             await self.emit("Эта акция сейчас недоступна.")
             return
@@ -554,6 +554,9 @@ async def handle_message(payload, *, preferences_only=False):
             if event and event.status == "done":
                 return
             event = event or DialogEvent(event_key=key, user_id=user_id)
+            from .safes import handle_request as handle_safe_request
+            if await handle_safe_request(session, event, message, incoming):
+                return
             # Claiming an earned gift is independent of scenarios/chat_enabled.
             # It does not reset scenario progress or a manager's ownership.
             if await handle_gift_request(session, event, message, incoming):

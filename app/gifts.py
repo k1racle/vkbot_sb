@@ -57,6 +57,9 @@ DEFAULT_CHAT_INVITATIONS = [
 
 
 def invitation_defaults(mode):
+    if mode == "safe":
+        from .safes import DEFAULT_INVITATIONS as safe_defaults
+        return safe_defaults
     return DEFAULT_CHAT_INVITATIONS if mode == "chat_only" else DEFAULT_INVITATIONS
 
 
@@ -493,7 +496,7 @@ async def handle_gift_request(session, event, message, incoming, *, automatic=Fa
                 not campaign
                 or campaign.is_deleted
                 or not campaign.enabled
-                or campaign.delivery_mode == "chat_only"
+                or campaign.delivery_mode in {"chat_only", "safe"}
             ):
                 gift.status, gift.active_key = "cancelled", None
                 gift.awaiting_subscription = False

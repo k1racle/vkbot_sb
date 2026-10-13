@@ -141,6 +141,10 @@ const failures = {
   empty: "Выберите непустой файл.",
   invitation: "Добавьте от 1 до 10 приглашений, до 2000 символов каждое. В каждом тексте нужна переменная {chat_url} для ссылки на чат.",
   promo: "Для режима с подарком заполните промокод, ссылку на магазин и текст сообщения. Для обычного диалога выберите «Пригласить в чат — без подарка».",
+  safe_settings: "Для сейфа укажите конкретный пост, код из четырёх цифр, начало и конец игры, а также все тексты ответов.",
+  safe_locked: "После включения сейфа нельзя менять код, даты, пост, тип кампании и тексты результатов. Для новой игры создайте новую кампанию.",
+  safe_future: "Для первого включения сейфа выберите будущее время начала игры.",
+  safe_history: "У этой кампании уже есть история. Создайте отдельную кампанию для сейфа.",
 };
 const notice = document.getElementById("page-notice");
 for (const [key, value] of query) {
@@ -234,10 +238,11 @@ if (deliveryMode) {
   const defaults = JSON.parse(document.getElementById("invitation-defaults").textContent);
   const template = variants.firstElementChild.cloneNode(true);
   const drafts = {};
-  let variantMode = deliveryMode.value === "chat_only" ? "chat" : "gift";
+  let variantMode = deliveryMode.value === "safe" ? "safe" : deliveryMode.value === "chat_only" ? "chat" : "gift";
   const refresh = () => {
     const chatOnly = deliveryMode.value === "chat_only";
-    const nextMode = chatOnly ? "chat" : "gift";
+    const safe = deliveryMode.value === "safe";
+    const nextMode = safe ? "safe" : chatOnly ? "chat" : "gift";
     if (nextMode !== variantMode) {
       // Keep unsaved invitation texts for both modes during this edit.
       drafts[variantMode] = [...variants.querySelectorAll("textarea")].map(area => area.value);
@@ -251,10 +256,17 @@ if (deliveryMode) {
     const cards = [...variants.children];
     const enabled = deliveryMode.value !== "direct";
     section.hidden = !enabled;
-    document.querySelectorAll("[data-gift-invitation]").forEach(el => el.hidden = chatOnly);
+    document.querySelectorAll("[data-gift-invitation]").forEach(el => el.hidden = chatOnly || safe);
     document.querySelectorAll("[data-chat-invitation]").forEach(el => el.hidden = !chatOnly);
     const promo = document.getElementById("campaign-promo-fields");
     promo.hidden = promo.disabled = chatOnly;
+    const safeSettings = document.getElementById("safe-settings");
+    safeSettings.hidden = safeSettings.disabled = !safe;
+    const filters = document.getElementById("campaign-comment-filters");
+    filters.hidden = filters.disabled = safe;
+    const post = deliveryMode.form.elements.post_id;
+    post.required = safe;
+    post.readOnly = safe && safeSettings.querySelector('[name="safe_code"]').readOnly;
     document.getElementById("campaign-repeat-label").textContent = chatOnly
       ? "Одно приглашение клиенту в этой кампании" : "Один промокод клиенту в этой кампании";
     document.getElementById("campaign-membership-hint").textContent = chatOnly

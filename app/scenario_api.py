@@ -84,7 +84,7 @@ def checked(session, graph):
         [
             c.id
             for c in session.query(Campaign).filter_by(enabled=True, is_deleted=False)
-            if c.delivery_mode != "chat_only"
+            if c.delivery_mode not in {"chat_only", "safe"}
         ],
         [a.id for a in session.query(MediaAsset)],
     )
@@ -120,7 +120,7 @@ def list_scenarios():
             "campaigns": [
                 {"id": c.id, "title": c.title, "enabled": c.enabled}
                 for c in session.query(Campaign).filter_by(is_deleted=False)
-                if c.delivery_mode != "chat_only"
+                if c.delivery_mode not in {"chat_only", "safe"}
             ],
             "media": [
                 {"id": a.id, "filename": a.filename} for a in session.query(MediaAsset)
