@@ -1,6 +1,4 @@
-import asyncio
 import json
-import time
 from pathlib import Path
 
 import httpx
@@ -49,102 +47,6 @@ async def is_group_member(user_id: int) -> bool:
         "groups.isMember", group_id=get_settings().vk_group_id, user_id=user_id
     )
     return bool(result)
-
-
-async def safe_comments_snapshot(post_id: int) -> list[dict]:
-    """Read the complete post and its threads using the optional user credential.
-
-    VK wall.getComments does not accept community credentials. The user token
-    is used only for reading here; all invitations/prizes still use the group.
-    An incomplete or changing page is an error, never evidence of a deletion.
-    """
-    from .comments import integer
-    from .projects import current_project, get_project
-
-    selected = current_project.get()
-    project = get_project(selected.id) if selected else None
-    if not project or not project.enabled or not project.video_token:
-        raise VkApiError(
-            "Для проверки сейфа подключите пользовательский токен в настройках проекта"
-        )
-    token = project.video_token
-    owner = -project.group_id
-    last_request = None
-
-    async def pages(parent=0):
-        nonlocal last_request
-        result, seen = [], set()
-        offset, total = 0, None
-        while True:
-            params = dict(
-                owner_id=owner,
-                post_id=post_id,
-                count=100,
-                offset=offset,
-                sort="asc",
-                preview_length=0,
-                thread_items_count=10,
-            )
-            if parent:
-                params["comment_id"] = parent
-            # Large games require many pages. Avoid sending a burst of requests
-            # under the user's credential; VK errors still fail verification.
-            if last_request is not None:
-                await asyncio.sleep(max(0, 0.35 - (time.monotonic() - last_request)))
-            last_request = time.monotonic()
-            data = await _request("wall.getComments", token, **params)
-            if (
-                not isinstance(data, dict)
-                or not isinstance(data.get("items"), list)
-                or type(data.get("count")) is not int
-            ):
-                raise VkApiError(
-                    "VK вернул неполный список комментариев; повторите проверку"
-                )
-            count = data.get("current_level_count", data["count"])
-            if type(count) is not int:
-                raise VkApiError("VK вернул некорректное количество комментариев")
-            if count < 0 or (total is not None and total != count):
-                raise VkApiError(
-                    "Комментарии изменились во время проверки; повторите её"
-                )
-            total = count
-            batch = data["items"]
-            for item in batch:
-                ident = integer(item.get("id")) if isinstance(item, dict) else 0
-                if ident <= 0 or ident in seen:
-                    raise VkApiError(
-                        "VK вернул неполную страницу комментариев; повторите проверку"
-                    )
-                seen.add(ident)
-                result.append(item)
-            offset += len(batch)
-            if offset >= total:
-                if offset != total:
-                    raise VkApiError(
-                        "Количество комментариев изменилось; повторите проверку"
-                    )
-                return result
-            if not batch or offset > 100000:
-                raise VkApiError(
-                    "Не удалось прочитать все комментарии; повторите проверку"
-                )
-
-    roots = await pages()
-    result = list(roots)
-    for item in roots:
-        thread = item.get("thread") or {}
-        count = integer(thread.get("count"))
-        if count > 0:
-            preview = thread.get("items", [])
-            result.extend(
-                preview
-                if isinstance(preview, list) and len(preview) == count
-                else await pages(item["id"])
-            )
-    if len({item["id"] for item in result}) != len(result):
-        raise VkApiError("VK вернул повторяющиеся комментарии; повторите проверку")
-    return result
 
 
 async def get_user_name(user_id: int) -> str:

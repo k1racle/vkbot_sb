@@ -37,23 +37,6 @@ def game(comments, monkeypatch):
         session.commit()
         ident = row.id
 
-    async def snapshot(post):
-        assert post == 594
-        with sessions() as session:
-            return [
-                {
-                    "id": r.comment_id,
-                    "from_id": r.user_id,
-                    "date": r.published_at,
-                    "text": r.original_text,
-                }
-                for r in session.query(db.SafeComment)
-                if r.original_seen and r.invalid_reason != "deleted"
-            ]
-
-    monkeypatch.setattr(
-        vk_api, "safe_comments_snapshot", AsyncMock(side_effect=snapshot)
-    )
     return client, sessions, ident, instant
 
 
@@ -123,7 +106,6 @@ def test_bad_format_does_not_consume_attempt(game, code):
         assert session.query(db.SafeAttempt).count() == 0
     client.post("/vk/callback", json=entry(instant, "1111", number=2))
     check(client, sessions)
-    vk_api.safe_comments_snapshot.assert_not_called()
     assert "Подарок BONUS" == vk_api.send_message.call_args.args[1]
 
 
@@ -191,6 +173,27 @@ def test_reordered_first_comment_same_user(game):
         assert session.query(db.SafeAttempt).one().code == "1111"
 
 
+def test_delayed_earlier_callback_cannot_create_a_second_winner(game):
+    client, sessions, ident, instant = game
+    client.post("/vk/callback", json=entry(instant, user=88, number=2))
+    check(client, sessions, user=88)
+    # Events arriving after the committed award cannot transfer the prize.
+    client.post("/vk/callback", json=entry(instant, user=77, number=1, offset=-1))
+    check(client, sessions, user=77, number=11)
+    with sessions() as session:
+        winner = session.get(
+            db.SafeAttempt, session.get(db.Campaign, ident).safe_winner_id
+        )
+        assert winner.user_id == 88
+        assert session.query(db.PromoDelivery).count() == 2
+    congratulations = [
+        call
+        for call in vk_api.send_message.call_args_list
+        if "бокс твой" in call.args[1]
+    ]
+    assert len(congratulations) == 1 and congratulations[0].args[0] == 88
+
+
 def test_membership_gate_and_foreign_button(game, monkeypatch):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
@@ -207,61 +210,37 @@ def test_membership_gate_and_foreign_button(game, monkeypatch):
     )
 
 
-def test_missing_callback_blocks_award(game, monkeypatch):
+@pytest.mark.parametrize("corruption", ["missing", "unseen", "text", "author", "date"])
+def test_missing_or_inconsistent_original_blocks_award(game, corruption):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
-    monkeypatch.setattr(
-        vk_api,
-        "safe_comments_snapshot",
-        AsyncMock(
-            return_value=[
-                {
-                    "id": 1,
-                    "from_id": 77,
-                    "date": safes.timestamp(instant),
-                    "text": "0047",
-                },
-                {
-                    "id": 9,
-                    "from_id": 88,
-                    "date": safes.timestamp(instant) - 1,
-                    "text": "0047",
-                },
-            ]
-        ),
-    )
+    with sessions() as session:
+        original = session.query(db.SafeComment).one()
+        if corruption == "missing":
+            session.delete(original)
+        elif corruption == "unseen":
+            original.original_seen = False
+        elif corruption == "text":
+            original.original_text = "9999"
+        elif corruption == "author":
+            original.user_id = 88
+        else:
+            original.published_at -= 1
+        session.commit()
     check(client, sessions)
     assert "не удалось завершить" in vk_api.send_message.call_args.args[1]
     with sessions() as session:
         assert session.get(db.Campaign, ident).safe_winner_id is None
 
 
-def test_changed_api_comment_invalidates_and_new_eligible_user_can_win(
-    game, monkeypatch
-):
+def test_edit_reverted_to_correct_code_stays_invalid_and_next_user_can_win(game):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
     client.post("/vk/callback", json=entry(instant, user=88, number=2, offset=1))
-    monkeypatch.setattr(
-        vk_api,
-        "safe_comments_snapshot",
-        AsyncMock(
-            return_value=[
-                {
-                    "id": 1,
-                    "from_id": 77,
-                    "date": safes.timestamp(instant),
-                    "text": "1234",
-                },
-                {
-                    "id": 2,
-                    "from_id": 88,
-                    "date": safes.timestamp(instant) + 1,
-                    "text": "0047",
-                },
-            ]
-        ),
-    )
+    for code in ("1234", "0047"):
+        edited = entry(instant, code)
+        edited["type"] = "wall_reply_edit"
+        client.post("/vk/callback", json=edited)
     check(client, sessions, user=88)
     with sessions() as session:
         assert (
@@ -372,21 +351,20 @@ def test_concurrent_checks_leave_only_one_winner(game, monkeypatch):
     client, sessions, ident, instant = game
     for user, number in [(77, 1), (88, 2)]:
         client.post("/vk/callback", json=entry(instant, user=user, number=number))
-    snapshot = vk_api.safe_comments_snapshot.side_effect
 
     async def run():
         gate = asyncio.Event()
         calls = 0
 
-        async def overlap(post):
+        async def overlap(user):
             nonlocal calls
             calls += 1
             if calls == 2:
                 gate.set()
             await gate.wait()
-            return await snapshot(post)
+            return True
 
-        monkeypatch.setattr(vk_api, "safe_comments_snapshot", overlap)
+        monkeypatch.setattr(vk_api, "is_group_member", overlap)
         with sessions() as session:
             ids = [
                 r.id
@@ -405,21 +383,32 @@ def test_concurrent_checks_leave_only_one_winner(game, monkeypatch):
         if campaign.safe_winner_id:
             assert session.get(db.SafeAttempt, campaign.safe_winner_id).user_id == 77
     assert results[1] != "winner"
+    with sessions() as session:
+        first = session.query(db.SafeAttempt).filter_by(user_id=77).one().id
+    assert asyncio.run(safes.claim_winner(first)) == "winner"
+    with sessions() as session:
+        assert session.get(db.Campaign, ident).safe_winner_id == first
 
 
-def test_edit_during_verification_prevents_stale_award(game, monkeypatch):
+@pytest.mark.parametrize("kind", ["wall_reply_edit", "wall_reply_delete", "earlier"])
+def test_callback_during_verification_prevents_stale_award(game, monkeypatch, kind):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
-    snapshot = vk_api.safe_comments_snapshot.side_effect
+    calls = 0
 
-    async def editing(post):
-        values = await snapshot(post)
-        data = entry(instant)
-        data["type"] = "wall_reply_edit"
-        safes.register_comment(data)
-        return values
+    async def changing(user):
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # Change history after claim_winner reads its revision.
+            data = entry(instant)
+            if kind == "earlier":
+                data = entry(instant, user=88, number=9, offset=-1)
+            else:
+                data["type"] = kind
+            safes.register_comment(data)
+        return True
 
-    monkeypatch.setattr(vk_api, "safe_comments_snapshot", editing)
+    monkeypatch.setattr(vk_api, "is_group_member", changing)
     check(client, sessions)
     with sessions() as session:
         assert session.get(db.Campaign, ident).safe_winner_id is None
@@ -429,17 +418,17 @@ def test_edit_during_verification_prevents_stale_award(game, monkeypatch):
 def test_unavailable_vk_does_not_award_and_button_can_retry(game, monkeypatch):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
-    snapshot = vk_api.safe_comments_snapshot
+    membership = vk_api.is_group_member
     monkeypatch.setattr(
         vk_api,
-        "safe_comments_snapshot",
-        AsyncMock(side_effect=vk_api.VkApiError("5: token expired")),
+        "is_group_member",
+        AsyncMock(side_effect=[True, vk_api.VkApiError("6: Too many requests")]),
     )
     check(client, sessions)
     with sessions() as session:
         assert session.get(db.Campaign, ident).safe_winner_id is None
-        assert "token expired" in session.query(db.SafeAttempt).one().error
-    monkeypatch.setattr(vk_api, "safe_comments_snapshot", snapshot)
+        assert "Too many requests" in session.query(db.SafeAttempt).one().error
+    monkeypatch.setattr(vk_api, "is_group_member", membership)
     check(client, sessions, number=11)
     with sessions() as session:
         assert session.get(db.Campaign, ident).safe_winner_id
@@ -527,40 +516,6 @@ def test_upgrade_from_old_schema_preserves_campaign(setup):
         assert not campaign.safe_locked and campaign.safe_winner_id is None
 
 
-def test_snapshot_reads_threads_and_uses_only_user_token(setup, monkeypatch):
-    from types import SimpleNamespace
-    from app import projects
-
-    user_project = SimpleNamespace(
-        id=111, group_id=123, enabled=True, video_token="READ-ONLY-TEST"
-    )
-    monkeypatch.setattr(projects, "get_project", lambda ident: user_project)
-    request = AsyncMock(
-        side_effect=[
-            {
-                "count": 4,
-                "current_level_count": 2,
-                "items": [
-                    {"id": 1, "thread": {"count": 1, "items": [{"id": 3}]}},
-                    {"id": 2, "thread": {"count": 1, "items": []}},
-                ],
-            },
-            {"count": 1, "items": [{"id": 4}]},
-        ]
-    )
-    monkeypatch.setattr(vk_api, "_request", request)
-    token = projects.current_project.set(user_project)
-    try:
-        result = asyncio.run(vk_api.safe_comments_snapshot(594))
-    finally:
-        projects.current_project.reset(token)
-    assert {r["id"] for r in result} == {1, 2, 3, 4}
-    assert all(
-        c.args == ("wall.getComments", "READ-ONLY-TEST") for c in request.call_args_list
-    )
-    assert request.call_args_list[1].kwargs["comment_id"] == 2
-
-
 def test_safe_not_available_as_scenario_promo(game):
     client, _, ident, _ = game
     login(client)
@@ -570,18 +525,29 @@ def test_safe_not_available_as_scenario_promo(game):
     )
 
 
-def test_same_ids_in_two_projects_have_independent_attempts_and_winners(
-    two_projects, monkeypatch
+@pytest.mark.parametrize("user_token", ["", "unusable-ip-bound-user-token"])
+def test_safe_uses_only_group_token_and_projects_have_independent_winners(
+    two_projects, user_token
 ):
     from test_projects import (
         callback,
         comment as project_comment,
         message as project_message,
-        projects,
+        configure,
         session_for,
     )
 
     env, first, second = two_projects
+    first = configure(env.client, first, video_token=user_token)
+    second = configure(env.client, second, video_token=user_token)
+    # The old extra check used a user token and failed with this live VK error.
+    env.network.replies["wall.getComments"] = {
+        "error": {
+            "error_code": 5,
+            "error_msg": "User authorization failed: access_token was given to another ip address",
+        }
+    }
+    env.network.calls.clear()
     instant = safes.now().replace(microsecond=0)
     for project in (first, second):
         with session_for(project) as session:
@@ -601,25 +567,15 @@ def test_same_ids_in_two_projects_have_independent_attempts_and_winners(
             )
             session.commit()
 
-    async def snapshot(post):
-        with session_for(projects.current_project.get()) as session:
-            return [
-                {
-                    "id": a.comment_id,
-                    "date": a.published_at,
-                    "from_id": a.user_id,
-                    "text": a.code,
-                }
-                for a in session.query(db.SafeAttempt)
-            ]
-
-    monkeypatch.setattr(vk_api, "safe_comments_snapshot", snapshot)
     for project in (first, second):
         data = project_comment(project)
         data["object"].update(text="0047", date=safes.timestamp(instant))
         assert callback(env.client, project, data).text == "ok"
         with session_for(project) as session:
-            aid = session.query(db.SafeAttempt).one().id
+            attempt = session.query(db.SafeAttempt).one()
+            aid = attempt.id
+            attempt.error = "5: User authorization failed: access_token was given to another ip address"
+            session.commit()
         data = project_message(project, text="Проверить код", number=9)
         data["object"]["message"]["payload"] = json.dumps(
             {"action": "safe_check", "attempt_id": aid}
@@ -628,7 +584,13 @@ def test_same_ids_in_two_projects_have_independent_attempts_and_winners(
         with session_for(project) as session:
             assert session.query(db.Campaign).one().safe_winner_id == aid
             assert session.query(db.SafeAttempt).one().bonus_sent
+            assert session.query(db.SafeAttempt).one().error == ""
             assert session.query(db.PromoDelivery).one().promo_code == project.name
+    assert all(c["method"] != "wall.getComments" for c in env.network.calls)
+    for project in (first, second):
+        calls = [c for c in env.network.calls if c["project_id"] == project.id]
+        assert calls
+        assert all(c["params"]["access_token"] == project.token for c in calls)
 
 
 def test_missing_optional_owner_still_uses_safe_and_never_regular_gift(game):

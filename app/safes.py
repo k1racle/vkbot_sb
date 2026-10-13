@@ -1,6 +1,6 @@
 """One original attempt per account; one durable prize per project campaign.
 
-The button reveals the saved code. Correct guesses are checked against VK's
+The button reveals the saved code. Authenticated comment callbacks supply the
 chronology before an atomic winner claim. No database lock spans network I/O.
 """
 
@@ -123,7 +123,7 @@ def register_comment(payload):
     """Consume authenticated wall events synchronously; return a new invite ID.
 
     All original comments are retained, including non-codes. A later edit into
-    a valid code cannot invent an original entry during reconciliation.
+    a valid code cannot invent an original entry when checking a saved attempt.
     """
     kind = payload.get("type")
     if kind not in {
@@ -342,42 +342,27 @@ async def claim_winner(attempt_id):
             .order_by(db.SafeAttempt.published_at, db.SafeAttempt.comment_id)
             .all()
         )
-    snapshot = await vk_api.safe_comments_snapshot(campaign.post_id)
-    current = {integer(item.get("id")): item for item in snapshot}
     cutoff = (attempt.published_at, attempt.comment_id)
-    for item in snapshot:
-        date, ident, author = (
-            integer(item.get("date")),
-            integer(item.get("id")),
-            integer(item.get("from_id")),
-        )
-        if author <= 0:
-            continue
-        if not date:
-            raise VerificationPending(
-                "VK вернул комментарий без времени; повторите проверку"
-            )
-        if in_window(campaign, date) and (date, ident) <= cutoff:
-            original = evidence.get(ident)
-            if original is None or not original.original_seen:
-                raise VerificationPending(
-                    "Ждём исходные события комментариев от VK. Повторите проверку чуть позже."
-                )
     invalid = {}
     eligible = []
     for entry in attempts:
         if (entry.published_at, entry.comment_id) > cutoff:
             break
-        item = current.get(entry.comment_id)
-        reason = entry.invalid_reason
-        if not reason and (not item or item.get("deleted")):
-            reason = "deleted"
-        if not reason and (
-            str(item.get("text") or "").strip() != entry.code
-            or integer(item.get("from_id")) != entry.user_id
-            or integer(item.get("date")) != entry.published_at
+        original = evidence.get(entry.comment_id)
+        if original is None or not original.original_seen:
+            raise VerificationPending(
+                "Не найдено исходное событие сохранённой попытки. Проверьте историю кампании."
+            )
+        if (
+            original.original_text.strip() != entry.code
+            or original.user_id != entry.user_id
+            or original.published_at != entry.published_at
+            or not in_window(campaign, entry.published_at)
         ):
-            reason = "edited"
+            raise VerificationPending(
+                "Сохранённая попытка не совпадает с исходным комментарием. Проверьте историю кампании."
+            )
+        reason = entry.invalid_reason or original.invalid_reason
         if reason:
             invalid[entry.id] = reason
         elif entry.code == campaign.safe_code:
@@ -389,7 +374,7 @@ async def claim_winner(attempt_id):
             break
     with db.SessionLocal() as session:
         # A callback, pause, settings change or another winner invalidates this
-        # snapshot. The conditional write also arbitrates multiple app workers.
+        # saved history. The conditional write also arbitrates multiple workers.
         changed = session.execute(
             update(db.Campaign)
             .where(
