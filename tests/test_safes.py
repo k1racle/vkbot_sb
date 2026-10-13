@@ -77,9 +77,10 @@ def test_leading_zero_one_attempt_bonus_button_and_single_winner(game):
     )
     with sessions() as session:
         attempt = session.query(db.SafeAttempt).one()
-        assert attempt.code == "0047" and attempt.comment_id == 1 and attempt.bonus_sent
+        assert attempt.code == "0047" and attempt.comment_id == 1
+        assert not attempt.bonus_sent and not attempt.bonus_payload
         assert session.get(db.Campaign, ident).safe_winner_id == attempt.id
-        assert session.query(db.PromoDelivery).count() == 1
+        assert session.query(db.PromoDelivery).count() == 0
     db.init_db()
     check(client, sessions, number=11)
     client.post("/vk/callback", json=entry(instant, user=88, number=3, offset=1))
@@ -89,11 +90,18 @@ def test_leading_zero_one_attempt_bonus_button_and_single_winner(game):
     )
     with sessions() as session:
         assert session.query(db.SafeAttempt).count() == 2
-        assert session.query(db.PromoDelivery).count() == 2
+        assert session.query(db.PromoDelivery).one().user_id == 88
         assert (
             session.get(db.Campaign, ident).safe_winner_id
             == session.query(db.SafeAttempt).filter_by(user_id=77).one().id
         )
+    winner_messages = [
+        call.args[1]
+        for call in vk_api.send_message.call_args_list
+        if call.args[0] == 77
+    ]
+    assert sum("С вами свяжется менеджер" in text for text in winner_messages) == 2
+    assert all("BONUS" not in text for text in winner_messages)
 
 
 @pytest.mark.parametrize(
@@ -114,9 +122,72 @@ def test_wrong_first_cannot_be_replaced_by_right(game):
     client.post("/vk/callback", json=entry(instant, "1234"))
     client.post("/vk/callback", json=entry(instant, number=2))
     check(client, sessions)
+    check(client, sessions, number=11)
     with sessions() as session:
         assert session.get(db.Campaign, ident).safe_winner_id is None
         assert session.query(db.SafeAttempt).one().code == "1234"
+        assert session.query(db.PromoDelivery).one().user_id == 77
+    assert (
+        sum(
+            call.args[1] == "Подарок BONUS"
+            for call in vk_api.send_message.call_args_list
+        )
+        == 1
+    )
+
+
+def test_winner_uses_saved_greeting_without_preparing_promo_or_attachment(
+    game, monkeypatch
+):
+    client, sessions, ident, instant = game
+    upload = AsyncMock()
+    monkeypatch.setattr(vk_api, "upload_file_for_message", upload)
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        campaign.safe_messages = {"winner": "Поздравляем с выигрышем бокса!"}
+        campaign.attachment_path = "must-not-be-uploaded.pdf"
+        session.commit()
+    client.post("/vk/callback", json=entry(instant))
+    check(client, sessions)
+    assert vk_api.send_message.call_count == 1
+    text = vk_api.send_message.call_args.args[1]
+    assert text.startswith("Поздравляем с выигрышем бокса!")
+    assert "С вами свяжется менеджер" in text
+    assert "BONUS" not in text
+    upload.assert_not_called()
+    vk_api.get_user_name.assert_not_called()
+    login(client)
+    page = client.get(f"/admin?section=campaigns&campaign_id={ident}")
+    assert "Не предусмотрен — выигран бокс" in page.text
+
+
+@pytest.mark.parametrize("already_sent", [False, True])
+def test_existing_winner_never_resumes_old_bonus_delivery(game, already_sent):
+    client, sessions, ident, instant = game
+    client.post("/vk/callback", json=entry(instant))
+    with sessions() as session:
+        attempt = session.query(db.SafeAttempt).one()
+        campaign = session.get(db.Campaign, ident)
+        campaign.safe_winner_id = attempt.id
+        campaign.safe_notification_sent = True
+        attempt.bonus_payload = {
+            "text": "Подарок BONUS",
+            "promo_code": "BONUS",
+            "attachment": "doc123_456",
+        }
+        attempt.bonus_sent = already_sent
+        if already_sent:
+            session.add(
+                db.PromoDelivery(user_id=77, campaign_id=ident, promo_code="BONUS")
+            )
+        session.commit()
+    check(client, sessions)
+    assert vk_api.send_message.call_count == 1
+    assert "С вами свяжется менеджер" in vk_api.send_message.call_args.args[1]
+    assert "BONUS" not in vk_api.send_message.call_args.args[1]
+    with sessions() as session:
+        assert session.query(db.SafeAttempt).one().bonus_sent == already_sent
+        assert session.query(db.PromoDelivery).count() == int(already_sent)
 
 
 @pytest.mark.parametrize(
@@ -185,7 +256,7 @@ def test_delayed_earlier_callback_cannot_create_a_second_winner(game):
             db.SafeAttempt, session.get(db.Campaign, ident).safe_winner_id
         )
         assert winner.user_id == 88
-        assert session.query(db.PromoDelivery).count() == 2
+        assert session.query(db.PromoDelivery).one().user_id == 77
     congratulations = [
         call
         for call in vk_api.send_message.call_args_list
@@ -273,7 +344,8 @@ def test_winner_survives_failed_send_and_late_deletion(game, monkeypatch):
     with sessions() as session:
         campaign = session.get(db.Campaign, ident)
         assert campaign.safe_winner_id == winner_id and campaign.safe_notification_sent
-        assert session.query(db.PromoDelivery).count() == 1
+        assert session.query(db.PromoDelivery).count() == 0
+        assert not session.get(db.SafeAttempt, winner_id).bonus_sent
 
 
 def test_db_unique_attempt_and_additive_migration(game):
@@ -583,9 +655,9 @@ def test_safe_uses_only_group_token_and_projects_have_independent_winners(
         assert callback(env.client, project, data).text == "ok"
         with session_for(project) as session:
             assert session.query(db.Campaign).one().safe_winner_id == aid
-            assert session.query(db.SafeAttempt).one().bonus_sent
+            assert not session.query(db.SafeAttempt).one().bonus_sent
             assert session.query(db.SafeAttempt).one().error == ""
-            assert session.query(db.PromoDelivery).one().promo_code == project.name
+            assert session.query(db.PromoDelivery).count() == 0
     assert all(c["method"] != "wall.getComments" for c in env.network.calls)
     for project in (first, second):
         calls = [c for c in env.network.calls if c["project_id"] == project.id]

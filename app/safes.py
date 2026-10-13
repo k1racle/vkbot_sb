@@ -508,8 +508,10 @@ async def handle_request(session, event, message, incoming):
                         if outcome == "earlier"
                         else messages(campaign)[outcome]
                     )
-                    if outcome == "winner" and campaign.safe_notification_sent:
-                        text += "\nПобеда уже закреплена за вами. Повторное нажатие не создаёт новый приз."
+                    if outcome == "winner":
+                        text += "\nС вами свяжется менеджер, чтобы договориться о получении бокса."
+                        if campaign.safe_notification_sent:
+                            text += "\nПобеда уже закреплена за вами. Повторное нажатие не создаёт новый приз."
                     await notice(
                         text,
                         key=f"safe-win:{campaign.id}"
@@ -522,7 +524,8 @@ async def handle_request(session, event, message, incoming):
                             campaign.safe_notification_error,
                         ) = True, ""
                         session.commit()
-                    await send_bonus(session, attempt, campaign)
+                    else:
+                        await send_bonus(session, attempt, campaign)
         event.status, event.error = "done", ""
         if attempt:
             attempt.error = ""
@@ -552,7 +555,7 @@ async def handle_request(session, event, message, incoming):
 
 
 async def send_bonus(session, attempt, campaign):
-    if attempt.bonus_sent:
+    if attempt.bonus_sent or campaign.safe_winner_id == attempt.id:
         return
     if not attempt.bonus_payload:
         from pathlib import Path
