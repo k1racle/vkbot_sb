@@ -300,6 +300,9 @@ async def admin_page(
         "safe_notification_error": selected_campaign.safe_notification_error
         if selected_campaign
         else "",
+        "safe_notification_sent": selected_campaign.safe_notification_sent
+        if selected_campaign
+        else False,
         "id": selected_campaign.id if selected_campaign else "",
         "post_id": (selected_campaign.post_id or "") if selected_campaign else "",
         "title": selected_campaign.title if selected_campaign else "",
@@ -741,6 +744,22 @@ async def toggle_campaign(request: Request, campaign_id: int):
     return RedirectResponse(
         "/admin?section=campaigns&campaign_toggled=1",
         status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post("/admin/safe-attempts/{attempt_id}/retry-invitation")
+async def retry_safe_invitation(request: Request, attempt_id: int):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        attempt = session.get(SafeAttempt, attempt_id)
+        campaign = session.get(Campaign, attempt.campaign_id) if attempt else None
+        if campaign is None or campaign.is_deleted or campaign.delivery_mode != "safe":
+            raise HTTPException(404, "Попытка сейфа не найдена")
+        campaign_id = campaign.id
+    await safes.send_invitation(attempt_id)
+    return RedirectResponse(
+        f"/admin?section=campaigns&campaign_id={campaign_id}", status_code=303
     )
 
 

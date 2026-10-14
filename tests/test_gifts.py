@@ -446,7 +446,7 @@ def test_invite_filters_and_video_limitation(invitations, monkeypatch):
 
 
 def test_official_wall_reply_parameters(setup, monkeypatch):
-    call = AsyncMock()
+    call = AsyncMock(return_value={"comment_id": 42})
     monkeypatch.setattr(vk_api, "call", call)
     asyncio.run(
         vk_api.reply_to_wall_comment(
@@ -466,6 +466,17 @@ def test_official_wall_reply_parameters(setup, monkeypatch):
         asyncio.run(
             vk_api.reply_to_wall_comment(
                 normalize_comment(comment(source="video"), 123), "x", "g"
+            )
+        )
+
+
+@pytest.mark.parametrize("response", [None, {}, {"comment_id": 0}, True, "42"])
+def test_wall_reply_requires_confirmed_comment_id(setup, monkeypatch, response):
+    monkeypatch.setattr(vk_api, "call", AsyncMock(return_value=response))
+    with pytest.raises(vk_api.VkApiError, match="не подтвердил"):
+        asyncio.run(
+            vk_api.reply_to_wall_comment(
+                normalize_comment(comment(), 123), "Спасибо!", "stable-guid"
             )
         )
 

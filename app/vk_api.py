@@ -65,12 +65,12 @@ async def is_messages_allowed(user_id: int) -> bool:
     return isinstance(result, dict) and result.get("is_allowed") == 1
 
 
-async def reply_to_wall_comment(comment, message: str, guid: str) -> None:
+async def reply_to_wall_comment(comment, message: str, guid: str) -> int:
     # video.createComment does not accept community tokens. Never silently post
     # to a wall with a video's numeric ID instead.
     if comment.source_type != "wall":
         raise ValueError("Приглашения доступны только для комментариев к постам")
-    await call(
+    result = await call(
         "wall.createComment",
         owner_id=comment.owner_id,
         post_id=comment.object_id,
@@ -79,6 +79,11 @@ async def reply_to_wall_comment(comment, message: str, guid: str) -> None:
         message=message,
         guid=guid,
     )
+    # Current VK returns an object; older API versions returned the ID directly.
+    comment_id = result.get("comment_id") if isinstance(result, dict) else result
+    if type(comment_id) is not int or comment_id <= 0:
+        raise VkApiError("VK не подтвердил создание ответа под комментарием")
+    return comment_id
 
 
 def video_reply_available() -> bool:

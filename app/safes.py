@@ -26,6 +26,10 @@ DEFAULT_MESSAGES = {
 DEFAULT_INVITATIONS = [
     "🔐 Комбинация принята! Проверь код в сообщениях сообщества: {chat_url}\nНажми «Начать» или напиши «Сейф» 🎁"
 ]
+INVITATION_WITHOUT_LINK = (
+    "🔐 Комбинация принята! Откройте сообщения этого сообщества "
+    "и напишите «Сейф», чтобы проверить код 🎁"
+)
 MOSCOW = timezone(timedelta(hours=3))
 
 
@@ -265,11 +269,14 @@ def register_comment(payload):
 
 
 async def send_invitation(attempt_id):
+    """Publish the wall reply before inviting into DM; retain each channel's error."""
     from .comments import Comment
     from .gifts import invitation_text
 
     with db.SessionLocal() as session:
         attempt = session.get(db.SafeAttempt, attempt_id)
+        if attempt is None:
+            return
         campaign = session.get(db.Campaign, attempt.campaign_id)
         if (
             not campaign.enabled
@@ -290,20 +297,47 @@ async def send_invitation(attempt_id):
             attempt.user_id,
             attempt.code,
         )
-        errors = []
         if not attempt.public_sent:
+            if not attempt.public_text:
+                attempt.public_text = invitation_text(campaign, values)
+                session.commit()  # Retry the same text and guid after a timeout.
             try:
-                await vk_api.reply_to_wall_comment(
-                    comment,
-                    invitation_text(campaign, values),
-                    guid=f"safe-{campaign.id}-{attempt.id}",
-                )
+                try:
+                    reply_id = await vk_api.reply_to_wall_comment(
+                        comment,
+                        attempt.public_text,
+                        guid=f"safe-{campaign.id}-{attempt.id}",
+                    )
+                except vk_api.VkApiError as error:
+                    if (
+                        error.code != 222
+                        or attempt.public_text == INVITATION_WITHOUT_LINK
+                    ):
+                        raise
+                    # VK explicitly refused hyperlinks; no comment was created.
+                    attempt.public_text = INVITATION_WITHOUT_LINK
+                    session.commit()
+                    reply_id = await vk_api.reply_to_wall_comment(
+                        comment,
+                        attempt.public_text,
+                        guid=f"safe-{campaign.id}-{attempt.id}",
+                    )
                 attempt.public_sent = True
+                attempt.public_reply_id = integer(reply_id)
+                attempt.public_error = ""
                 session.commit()
             except (vk_api.VkApiError, httpx.HTTPError) as error:
-                errors.append(str(error))
-        if not attempt.invitation_sent and not (
-            client and client.messages_allowed is False
+                attempt.public_error = (str(error) or type(error).__name__)[:1000]
+                session.commit()
+                return  # A DM must not silently replace the public invitation.
+        if (
+            not attempt.invitation_sent
+            and not attempt.bonus_sent
+            and not (
+                campaign.safe_winner_id == attempt.id
+                and campaign.safe_notification_sent
+            )
+            and not (client and client.messages_allowed is False)
         ):
             try:
                 if await vk_api.is_messages_allowed(attempt.user_id):
@@ -314,9 +348,9 @@ async def send_invitation(attempt_id):
                         keyboard=keyboard(attempt.id),
                     )
                     attempt.invitation_sent = True
+                    attempt.invitation_error = ""
             except (vk_api.VkApiError, httpx.HTTPError) as error:
-                errors.append(str(error))
-        attempt.error = "\n".join(errors)[:1000]
+                attempt.invitation_error = (str(error) or type(error).__name__)[:1000]
         session.commit()
 
 

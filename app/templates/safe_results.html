@@ -8,7 +8,20 @@
     <td><a href="https://vk.com/wall-{{ request.state.project.group_id }}_{{ campaign_form.post_id }}?reply={{ a.comment_id }}" target="_blank" rel="noopener">#{{ a.comment_id }}</a></td>
     <td>{{ a.published_at|safe_time }}</td><td><a href="https://vk.com/id{{ a.user_id }}" target="_blank" rel="noopener">{{ a.user_id }}</a></td><td>{{ a.code }}</td>
     <td>{% if a.id == campaign_form.safe_winner_id %}🏆 Победитель{% elif a.invalid_reason %}{{ {'edited':'Комментарий изменён', 'deleted':'Комментарий удалён'}.get(a.invalid_reason, a.invalid_reason) }}{% elif a.code == campaign_form.safe_code %}{{ 'Главный приз уже разыгран' if campaign_form.safe_winner_id else 'Верный код — ожидает проверки' }}{% else %}Код не подошёл{% endif %}</td>
-    <td>{{ 'Отправлен' if a.bonus_sent else ('Не предусмотрен — выигран бокс' if a.id == campaign_form.safe_winner_id else 'Не получен') }}</td><td class="error-cell">{{ a.error or ('Приглашение в личку отправлено' if a.invitation_sent else 'Вход через комментарий / команду «Сейф»') }}</td>
+    <td>{{ 'Отправлен' if a.bonus_sent else ('Не предусмотрен — выигран бокс' if a.id == campaign_form.safe_winner_id else 'Не получен') }}</td>
+    <td>
+      <div><strong>Под постом:</strong> {% if a.public_sent %}{% if a.public_reply_id %}<a href="https://vk.com/wall-{{ request.state.project.group_id }}_{{ campaign_form.post_id }}?reply={{ a.public_reply_id }}" target="_blank" rel="noopener">Ответ отправлен</a>{% else %}Ответ отправлен{% endif %}{% else %}Ответ не отправлен{% endif %}</div>
+      {% if a.public_error %}<div class="error-cell">{{ a.public_error }}</div>{% endif %}
+      <div><strong>В личку:</strong> {% if a.invitation_sent %}Приглашение отправлено{% elif a.bonus_sent or (a.id == campaign_form.safe_winner_id and campaign_form.safe_notification_sent) %}Результат уже получен{% elif not a.public_sent or a.invitation_error %}Приглашение не отправлено{% else %}Ожидается разрешение на сообщения / вход через «Сейф»{% endif %}</div>
+      {% if a.invitation_error %}<div class="error-cell">{{ a.invitation_error }}</div>{% endif %}
+      {% if a.error %}<div class="error-cell">Проверка / выдача: {{ a.error }}</div>{% endif %}
+      {% if not a.public_sent and not a.invalid_reason and campaign_form.enabled %}
+      <form method="post" action="{{ prefix }}/admin/safe-attempts/{{ a.id }}/retry-invitation">
+        <input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <button class="btn secondary" type="submit">Повторить ответ под постом</button>
+      </form>
+      {% endif %}
+    </td>
   </tr>{% else %}<tr><td colspan="7" class="empty">Пока нет попыток.</td></tr>{% endfor %}
   </tbody></table></div>
 </div>

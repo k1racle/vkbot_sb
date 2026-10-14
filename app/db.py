@@ -125,7 +125,11 @@ class SafeAttempt(Base):
     code: Mapped[str] = mapped_column(String(4))
     invalid_reason: Mapped[str] = mapped_column(String(32), default="")
     public_sent: Mapped[bool] = mapped_column(default=False)
+    public_reply_id: Mapped[int] = mapped_column(default=0, server_default="0")
+    public_text: Mapped[str] = mapped_column(Text, default="", server_default="")
+    public_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     invitation_sent: Mapped[bool] = mapped_column(default=False)
+    invitation_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     bonus_sent: Mapped[bool] = mapped_column(default=False)
     bonus_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
@@ -490,6 +494,12 @@ def init_db(
         "broadcasts": {"is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE"},
         "pending_gifts": {
             "awaiting_subscription": "BOOLEAN NOT NULL DEFAULT FALSE",
+        },
+        "safe_attempts": {
+            "public_reply_id": "INTEGER NOT NULL DEFAULT 0",
+            "public_text": "TEXT NOT NULL DEFAULT ''",
+            "public_error": "TEXT NOT NULL DEFAULT ''",
+            "invitation_error": "TEXT NOT NULL DEFAULT ''",
         },
         "conversations": {
             "assigned_operator_id": "BIGINT",

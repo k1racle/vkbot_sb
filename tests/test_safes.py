@@ -4,6 +4,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
+import httpx
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -512,12 +513,164 @@ def test_permission_dm_retry_keeps_invitation_id_and_attempt(game, monkeypatch):
     vk_api.send_message.side_effect = vk_api.VkApiError("901: denied")
     client.post("/vk/callback", json=entry(instant))
     initial = vk_api.send_message.call_args.kwargs["random_id"]
+    with sessions() as session:
+        assert "901" in session.query(db.SafeAttempt).one().invitation_error
     vk_api.send_message.side_effect = None
     client.post("/vk/callback", json=entry(instant))
     assert vk_api.send_message.call_args.kwargs["random_id"] == initial
     assert vk_api.reply_to_wall_comment.call_count == 1
     with sessions() as session:
         assert session.query(db.SafeAttempt).one().invitation_sent
+        assert session.query(db.SafeAttempt).one().invitation_error == ""
+
+
+@pytest.mark.parametrize(
+    "error", [vk_api.VkApiError("15: Access denied"), httpx.ReadTimeout("timeout")]
+)
+def test_public_failure_blocks_dm_and_survives_bonus_then_admin_can_retry(
+    game, monkeypatch, error
+):
+    client, sessions, ident, instant = game
+    monkeypatch.setattr(vk_api, "is_messages_allowed", AsyncMock(return_value=True))
+    reply = vk_api.reply_to_wall_comment
+    reply.side_effect = error
+    client.post("/vk/callback", json=entry(instant, "1234"))
+    initial = reply.call_args
+    vk_api.send_message.assert_not_called()
+    with sessions() as session:
+        attempt = session.query(db.SafeAttempt).one()
+        aid = attempt.id
+        assert not attempt.public_sent and not attempt.invitation_sent
+        assert str(error) in attempt.public_error
+    # A participant may enter the chat independently. This cannot erase the wall error.
+    check(client, sessions)
+    with sessions() as session:
+        assert session.query(db.SafeAttempt).one().bonus_sent
+        assert str(error) in session.query(db.SafeAttempt).one().public_error
+    login(client)
+    page = client.get(f"/admin?section=campaigns&campaign_id={ident}")
+    assert "Ответ не отправлен" in page.text and str(error) in page.text
+    assert "Повторить ответ под постом" in page.text
+    reply.side_effect, reply.return_value = None, 2042
+    vk_api.send_message.reset_mock()
+    # Changes to the form must not change an ambiguously sent comment on retry.
+    with sessions() as session:
+        session.get(db.Campaign, ident).public_reply_variants = ["Changed text"]
+        session.commit()
+    for _ in range(2):
+        page = client.post(f"/admin/safe-attempts/{aid}/retry-invitation")
+        assert page.status_code == 200
+    assert reply.call_args == initial and reply.call_count == 2
+    assert "?reply=2042" in page.text and "Ответ отправлен" in page.text
+    vk_api.send_message.assert_not_called()  # No extra invitation/promo after collecting the bonus.
+    with sessions() as session:
+        attempt = session.get(db.SafeAttempt, aid)
+        assert attempt.public_sent and attempt.public_reply_id == 2042
+        assert attempt.public_error == "" and attempt.bonus_sent
+        assert session.query(db.PromoDelivery).count() == 1
+
+
+def test_public_reply_precedes_dm_and_has_correct_post_and_comment(game, monkeypatch):
+    client, sessions, _, instant = game
+    calls = []
+
+    async def public(comment, text, guid):
+        calls.append("public")
+        assert (comment.owner_id, comment.object_id, comment.comment_id) == (
+            -123,
+            594,
+            1,
+        )
+        assert "vk.me" in text
+        return 2042
+
+    async def direct(*args, **kwargs):
+        calls.append("dm")
+
+    monkeypatch.setattr(vk_api, "reply_to_wall_comment", public)
+    monkeypatch.setattr(vk_api, "is_messages_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(vk_api, "send_message", direct)
+    client.post("/vk/callback", json=entry(instant))
+    client.post("/vk/callback", json=entry(instant))
+    assert calls == ["public", "dm"]
+    with sessions() as session:
+        attempt = session.query(db.SafeAttempt).one()
+        assert attempt.public_sent and attempt.invitation_sent
+        assert attempt.public_reply_id == 2042
+
+
+def test_link_rejection_posts_plain_invitation_before_dm(game, monkeypatch):
+    client, sessions, _, instant = game
+    monkeypatch.setattr(vk_api, "is_messages_allowed", AsyncMock(return_value=True))
+    reply = vk_api.reply_to_wall_comment
+    reply.side_effect = [vk_api.VkApiError("222: Hyperlinks are forbidden"), 2042]
+    client.post("/vk/callback", json=entry(instant))
+    assert reply.call_count == 2
+    first, second = reply.call_args_list
+    assert first.kwargs["guid"] == second.kwargs["guid"]
+    assert "http" in first.args[1] and "http" not in second.args[1]
+    assert "Сейф" in second.args[1]
+    with sessions() as session:
+        attempt = session.query(db.SafeAttempt).one()
+        assert (
+            attempt.public_sent and attempt.invitation_sent and not attempt.public_error
+        )
+        assert attempt.public_text == second.args[1]
+
+
+def test_public_retry_requires_auth_csrf_and_active_valid_attempt(game):
+    client, sessions, ident, instant = game
+    vk_api.reply_to_wall_comment.side_effect = vk_api.VkApiError("15: denied")
+    client.post("/vk/callback", json=entry(instant))
+    with sessions() as session:
+        aid = session.query(db.SafeAttempt).one().id
+    route = f"/admin/safe-attempts/{aid}/retry-invitation"
+    vk_api.reply_to_wall_comment.reset_mock()
+    assert client.post(route, follow_redirects=False).status_code == 303
+    login(client)
+    csrf = client.headers.pop("X-CSRF-Token")
+    assert client.post(route).status_code == 403
+    client.headers["X-CSRF-Token"] = csrf
+    assert (
+        client.post("/admin/safe-attempts/999999/retry-invitation").status_code == 404
+    )
+    with sessions() as session:
+        session.get(db.Campaign, ident).enabled = False
+        session.commit()
+    assert client.post(route).status_code == 200
+    with sessions() as session:
+        session.get(db.Campaign, ident).enabled = True
+        session.get(db.SafeAttempt, aid).invalid_reason = "deleted"
+        session.commit()
+    assert client.post(route).status_code == 200
+    vk_api.reply_to_wall_comment.assert_not_called()
+
+
+def test_invitation_migration_preserves_attempt_and_delivery_history(game):
+    client, sessions, _, instant = game
+    client.post("/vk/callback", json=entry(instant, "1234"))
+    check(client, sessions)
+    with db.engine.begin() as connection:
+        for column in (
+            "public_reply_id",
+            "public_text",
+            "public_error",
+            "invitation_error",
+        ):
+            connection.execute(text(f"ALTER TABLE safe_attempts DROP COLUMN {column}"))
+    db.init_db()
+    db.init_db()
+    with sessions() as session:
+        attempt = session.query(db.SafeAttempt).one()
+        assert attempt.code == "1234" and attempt.bonus_sent and attempt.public_sent
+        assert attempt.public_reply_id == 0
+        assert (
+            attempt.public_text
+            == attempt.public_error
+            == attempt.invitation_error
+            == ""
+        )
+        assert session.query(db.PromoDelivery).count() == 1
 
 
 def test_bonus_timeout_retries_exact_payload_without_new_delivery(game):
@@ -663,6 +816,28 @@ def test_safe_uses_only_group_token_and_projects_have_independent_winners(
         calls = [c for c in env.network.calls if c["project_id"] == project.id]
         assert calls
         assert all(c["params"]["access_token"] == project.token for c in calls)
+    # The retry route must stay in the selected project even when IDs coincide.
+    with session_for(first) as session:
+        attempt = session.query(db.SafeAttempt).one()
+        aid = attempt.id
+        attempt.public_sent, attempt.public_error = False, "15: denied"
+        session.commit()
+    with session_for(second) as session:
+        other_reply_id = session.query(db.SafeAttempt).one().public_reply_id
+    env.network.calls.clear()
+    assert (
+        env.client.post(
+            f"/p/{first.id}/admin/safe-attempts/{aid}/retry-invitation"
+        ).status_code
+        == 200
+    )
+    assert len(env.network.calls) == 1
+    assert env.network.calls[0]["project_id"] == first.id
+    assert env.network.calls[0]["method"] == "wall.createComment"
+    with session_for(first) as session:
+        assert session.query(db.SafeAttempt).one().public_error == ""
+    with session_for(second) as session:
+        assert session.query(db.SafeAttempt).one().public_reply_id == other_reply_id
 
 
 def test_missing_optional_owner_still_uses_safe_and_never_regular_gift(game):
