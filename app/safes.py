@@ -16,6 +16,7 @@ from .comments import integer, normalize_comment
 from .config import get_settings
 from .flows import render
 from .gifts import random_id
+from .operators import configured_operators
 
 DEFAULT_MESSAGES = {
     "invitation": "Твоя попытка зарегистрирована! Нажми «Проверить код», чтобы узнать результат 🔐",
@@ -443,6 +444,101 @@ async def claim_winner(attempt_id):
     return "winner" if first == attempt_id else "earlier" if first else "not_member"
 
 
+async def notify_winner_managers(campaign_id):
+    """Persist one message per manager; VK failures cannot undo a confirmed prize."""
+    with db.SessionLocal() as session:
+        campaign = (
+            session.query(db.Campaign)
+            .filter_by(
+                id=campaign_id, delivery_mode="safe", is_deleted=False, enabled=True
+            )
+            .with_for_update()
+            .first()
+        )
+        if not campaign or not campaign.safe_winner_id or test_mode(session):
+            return
+        try:
+            managers = configured_operators(db.read_settings(session), get_settings())
+        except ValueError as error:
+            campaign.safe_manager_error = str(error)
+            session.commit()
+            return
+        if not managers:
+            campaign.safe_manager_error = (
+                "Укажите ID менеджеров VK в разделе «Общение»."
+            )
+            session.commit()
+            return
+        winner = session.get(db.SafeAttempt, campaign.safe_winner_id)
+        group_id = get_settings().vk_group_id
+        message = (
+            "🏆 В игре «Сейф» подтверждён победитель!\n"
+            f"Кампания: {campaign.title}\n"
+            f"Участник: https://vk.com/id{winner.user_id}\n"
+            f"Комментарий: https://vk.com/wall-{group_id}_{campaign.post_id}?reply={winner.comment_id}\n"
+            f"Код: {winner.code}\n"
+            f"Время комментария (Москва): {display_time(winner.published_at)}\n"
+            "Приз: бокс с продукцией бренда.\n"
+            "Свяжитесь с победителем от имени сообщества и договоритесь о получении бокса."
+        )
+        for manager in managers:
+            if session.get(db.SafeManagerNotification, (campaign_id, manager)) is None:
+                session.add(
+                    db.SafeManagerNotification(
+                        campaign_id=campaign_id,
+                        manager_id=manager,
+                        attempt_id=winner.id,
+                        message=message,
+                    )
+                )
+        campaign.safe_manager_error = ""
+        session.commit()  # Exact text survives retries, configuration changes and restart.
+    for manager in managers:
+        with db.SessionLocal() as session:
+            campaign = session.get(db.Campaign, campaign_id)
+            notification = session.get(
+                db.SafeManagerNotification, (campaign_id, manager)
+            )
+            if (
+                campaign.is_deleted
+                or not campaign.enabled
+                or test_mode(session)
+                or campaign.safe_winner_id != notification.attempt_id
+            ):
+                return
+            try:
+                current_managers = configured_operators(
+                    db.read_settings(session), get_settings()
+                )
+            except ValueError:
+                return
+            if notification.sent or manager not in current_managers:
+                continue
+            message, attempt_id = notification.message, notification.attempt_id
+        error = ""
+        try:
+            await vk_api.send_message(
+                manager,
+                message,
+                random_id=random_id(
+                    f"safe-manager:{campaign_id}:{attempt_id}:{manager}"
+                ),
+            )
+        except (vk_api.VkApiError, httpx.HTTPError, OSError) as failure:
+            error = (str(failure) or type(failure).__name__)[:1000]
+        with db.SessionLocal() as session:
+            session.execute(
+                update(db.SafeManagerNotification)
+                .where(
+                    db.SafeManagerNotification.campaign_id == campaign_id,
+                    db.SafeManagerNotification.manager_id == manager,
+                    db.SafeManagerNotification.sent.is_(False),
+                )
+                .values(sent=not error, error=error)
+            )
+            session.commit()
+
+
 async def handle_request(session, event, message, incoming):
     word = str(message.get("text", "")).strip().casefold()
     check = incoming.get("action") == "safe_check"
@@ -546,19 +642,27 @@ async def handle_request(session, event, message, incoming):
                         text += "\nС вами свяжется менеджер, чтобы договориться о получении бокса."
                         if campaign.safe_notification_sent:
                             text += "\nПобеда уже закреплена за вами. Повторное нажатие не создаёт новый приз."
-                    await notice(
-                        text,
-                        key=f"safe-win:{campaign.id}"
-                        if outcome == "winner" and not campaign.safe_notification_sent
-                        else None,
-                    )
-                    if outcome == "winner":
-                        (
-                            campaign.safe_notification_sent,
-                            campaign.safe_notification_error,
-                        ) = True, ""
-                        session.commit()
-                    else:
+                    try:
+                        await notice(
+                            text,
+                            key=f"safe-win:{campaign.id}"
+                            if outcome == "winner"
+                            and not campaign.safe_notification_sent
+                            else None,
+                        )
+                        if outcome == "winner":
+                            (
+                                campaign.safe_notification_sent,
+                                campaign.safe_notification_error,
+                            ) = True, ""
+                            session.commit()
+                    finally:
+                        if outcome == "winner":
+                            # Do not delay the congratulations. Managers still
+                            # learn of the committed prize if that DM fails.
+                            session.commit()
+                            await notify_winner_managers(campaign.id)
+                    if outcome != "winner":
                         await send_bonus(session, attempt, campaign)
         event.status, event.error = "done", ""
         if attempt:

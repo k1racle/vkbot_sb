@@ -62,6 +62,232 @@ def check(client, sessions, user=77, number=10, attempt_id=None):
     )
 
 
+def managers(sessions, ids):
+    with sessions() as session:
+        db.save_settings(session, {"operator_user_id": ids})
+        session.commit()
+
+
+def test_confirmed_winner_notifies_each_manager_once_with_links(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "99, 100, 99")
+    client.post("/vk/callback", json=entry(instant))
+    vk_api.send_message.assert_not_called()
+    check(client, sessions)
+    assert vk_api.send_message.call_args_list[0].args[0] == 77
+    db.init_db()
+    check(client, sessions, number=11)
+    notifications = [
+        c for c in vk_api.send_message.call_args_list if c.args[0] in {99, 100}
+    ]
+    assert len(notifications) == 2
+    assert {c.args[0] for c in notifications} == {99, 100}
+    for call in notifications:
+        assert "Кампания: Сейф" in call.args[1]
+        assert "https://vk.com/id77" in call.args[1]
+        assert "https://vk.com/wall-123_594?reply=1" in call.args[1]
+        assert "0047" in call.args[1] and "бокс" in call.args[1]
+    with sessions() as session:
+        assert session.get(db.Campaign, ident).safe_notification_sent
+        assert all(
+            n.sent and not n.error for n in session.query(db.SafeManagerNotification)
+        )
+        assert session.query(db.PromoDelivery).count() == 0
+
+
+def test_manager_failure_does_not_block_winner_and_retry_keeps_payload(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "99, 100")
+    client.post("/vk/callback", json=entry(instant))
+
+    async def send(user, text, **kwargs):
+        if user == 99:
+            raise httpx.ReadTimeout("notification timed out")
+
+    vk_api.send_message.side_effect = send
+    check(client, sessions)
+    original = next(c for c in vk_api.send_message.call_args_list if c.args[0] == 99)
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        assert campaign.safe_winner_id and campaign.safe_notification_sent
+        assert "timed out" in session.get(db.SafeManagerNotification, (ident, 99)).error
+        assert session.get(db.SafeManagerNotification, (ident, 100)).sent
+        campaign.title = "Changed title"
+        session.commit()
+    vk_api.send_message.side_effect = None
+    vk_api.send_message.reset_mock()
+    login(client)
+    for _ in range(2):
+        page = client.post(f"/admin/campaigns/{ident}/notify-safe-managers")
+        assert page.status_code == 200
+    vk_api.send_message.assert_called_once()
+    assert vk_api.send_message.call_args == original
+    assert "Уведомление отправлено" in page.text
+    with sessions() as session:
+        assert all(
+            n.sent and not n.error for n in session.query(db.SafeManagerNotification)
+        )
+
+
+def test_managers_notified_even_if_congratulations_cannot_be_delivered(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "99")
+    client.post("/vk/callback", json=entry(instant))
+
+    async def send(user, text, **kwargs):
+        if user == 77:
+            raise vk_api.VkApiError("901: messages denied")
+
+    vk_api.send_message.side_effect = send
+    with pytest.raises(vk_api.VkApiError):
+        check(client, sessions)
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        assert campaign.safe_winner_id and not campaign.safe_notification_sent
+        assert session.get(db.SafeManagerNotification, (ident, 99)).sent
+    vk_api.send_message.side_effect = None
+    check(client, sessions, number=11)
+    assert sum(c.args[0] == 99 for c in vk_api.send_message.call_args_list) == 1
+
+
+def test_missing_managers_can_be_configured_after_win_without_resending_prize(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "")
+    client.post("/vk/callback", json=entry(instant))
+    check(client, sessions)
+    with sessions() as session:
+        assert "Укажите ID" in session.get(db.Campaign, ident).safe_manager_error
+        assert session.query(db.SafeManagerNotification).count() == 0
+    managers(sessions, "99")
+    vk_api.send_message.reset_mock()
+    login(client)
+    assert (
+        client.post(f"/admin/campaigns/{ident}/notify-safe-managers").status_code == 200
+    )
+    vk_api.send_message.assert_called_once()
+    assert vk_api.send_message.call_args.args[0] == 99
+    with sessions() as session:
+        assert not session.get(db.Campaign, ident).safe_manager_error
+
+
+@pytest.mark.parametrize("condition", ["no_winner", "paused", "deleted", "test_mode"])
+def test_manager_notifications_respect_campaign_state_and_test_mode(game, condition):
+    client, sessions, ident, instant = game
+    managers(sessions, "99")
+    client.post("/vk/callback", json=entry(instant, "1234"))
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        if condition != "no_winner":
+            campaign.safe_winner_id = session.query(db.SafeAttempt).one().id
+        if condition == "paused":
+            campaign.enabled = False
+        if condition == "deleted":
+            campaign.is_deleted = True
+        if condition == "test_mode":
+            db.save_settings(session, {"test_mode": "true"})
+        session.commit()
+    asyncio.run(safes.notify_winner_managers(ident))
+    vk_api.send_message.assert_not_called()
+    with sessions() as session:
+        assert session.query(db.SafeManagerNotification).count() == 0
+
+
+def test_wrong_code_never_notifies_managers(game):
+    client, sessions, _, instant = game
+    managers(sessions, "99")
+    client.post("/vk/callback", json=entry(instant, "1234"))
+    check(client, sessions)
+    assert all(c.args[0] == 77 for c in vk_api.send_message.call_args_list)
+    with sessions() as session:
+        assert session.query(db.SafeManagerNotification).count() == 0
+
+
+def test_notification_retry_skips_removed_manager(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "99")
+    client.post("/vk/callback", json=entry(instant))
+
+    async def send(user, text, **kwargs):
+        if user == 99:
+            raise vk_api.VkApiError("901: denied")
+
+    vk_api.send_message.side_effect = send
+    check(client, sessions)
+    managers(sessions, "100")
+    vk_api.send_message.side_effect = None
+    vk_api.send_message.reset_mock()
+    asyncio.run(safes.notify_winner_managers(ident))
+    vk_api.send_message.assert_called_once()
+    assert vk_api.send_message.call_args.args[0] == 100
+    with sessions() as session:
+        assert not session.get(db.SafeManagerNotification, (ident, 99)).sent
+        assert session.get(db.SafeManagerNotification, (ident, 100)).sent
+
+
+def test_notification_migration_preserves_existing_winner(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "")
+    client.post("/vk/callback", json=entry(instant))
+    check(client, sessions)
+    with db.engine.begin() as connection:
+        connection.execute(text("DROP TABLE safe_manager_notifications"))
+        connection.execute(text("ALTER TABLE campaigns DROP COLUMN safe_manager_error"))
+    db.init_db()
+    db.init_db()
+    managers(sessions, "99")
+    vk_api.send_message.reset_mock()
+    asyncio.run(safes.notify_winner_managers(ident))
+    vk_api.send_message.assert_called_once()
+    assert vk_api.send_message.call_args.args[0] == 99
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        assert campaign.safe_winner_id == session.query(db.SafeAttempt).one().id
+        assert campaign.safe_notification_sent and not campaign.safe_manager_error
+
+
+def test_overlapping_manager_sends_use_same_idempotency_key_and_message(game):
+    client, sessions, ident, instant = game
+    managers(sessions, "")
+    client.post("/vk/callback", json=entry(instant))
+    check(client, sessions)
+    managers(sessions, "99")
+    vk_api.send_message.reset_mock()
+
+    async def run():
+        gate = asyncio.Event()
+        count = 0
+
+        async def send(*args, **kwargs):
+            nonlocal count
+            count += 1
+            if count == 2:
+                gate.set()
+            await asyncio.wait_for(gate.wait(), timeout=2)
+
+        vk_api.send_message.side_effect = send
+        await asyncio.gather(
+            safes.notify_winner_managers(ident), safes.notify_winner_managers(ident)
+        )
+
+    asyncio.run(run())
+    first, second = vk_api.send_message.call_args_list
+    assert first == second
+    with sessions() as session:
+        assert session.query(db.SafeManagerNotification).one().sent
+
+
+def test_notification_retry_requires_login_and_csrf(game):
+    client, _, ident, _ = game
+    route = f"/admin/campaigns/{ident}/notify-safe-managers"
+    assert client.post(route, follow_redirects=False).status_code == 303
+    login(client)
+    csrf = client.headers.pop("X-CSRF-Token")
+    assert client.post(route).status_code == 403
+    client.headers["X-CSRF-Token"] = csrf
+    assert client.post("/admin/campaigns/99999/notify-safe-managers").status_code == 404
+    vk_api.send_message.assert_not_called()
+
+
 def test_leading_zero_one_attempt_bonus_button_and_single_winner(game):
     client, sessions, ident, instant = game
     client.post("/vk/callback", json=entry(instant))
@@ -776,6 +1002,9 @@ def test_safe_uses_only_group_token_and_projects_have_independent_winners(
     instant = safes.now().replace(microsecond=0)
     for project in (first, second):
         with session_for(project) as session:
+            db.save_settings(
+                session, {"operator_user_id": str(project.group_id + 1000)}
+            )
             session.add(
                 db.Campaign(
                     post_id=55,
@@ -811,6 +1040,12 @@ def test_safe_uses_only_group_token_and_projects_have_independent_winners(
             assert not session.query(db.SafeAttempt).one().bonus_sent
             assert session.query(db.SafeAttempt).one().error == ""
             assert session.query(db.PromoDelivery).count() == 0
+            notification = session.query(db.SafeManagerNotification).one()
+            assert (
+                notification.sent and notification.manager_id == project.group_id + 1000
+            )
+            assert project.name in notification.message
+            assert f"wall-{project.group_id}_55" in notification.message
     assert all(c["method"] != "wall.getComments" for c in env.network.calls)
     for project in (first, second):
         calls = [c for c in env.network.calls if c["project_id"] == project.id]

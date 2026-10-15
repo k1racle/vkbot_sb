@@ -92,6 +92,7 @@ class Campaign(Base):
     safe_notification_error: Mapped[str] = mapped_column(
         Text, default="", server_default=""
     )
+    safe_manager_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     public_reply_variants: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[object] = mapped_column(DateTime, server_default=func.now())
@@ -132,6 +133,17 @@ class SafeAttempt(Base):
     invitation_error: Mapped[str] = mapped_column(Text, default="", server_default="")
     bonus_sent: Mapped[bool] = mapped_column(default=False)
     bonus_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
+class SafeManagerNotification(Base):
+    __tablename__ = "safe_manager_notifications"
+
+    campaign_id: Mapped[int] = mapped_column(primary_key=True)
+    manager_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_id: Mapped[int] = mapped_column()
+    message: Mapped[str] = mapped_column(Text)
+    sent: Mapped[bool] = mapped_column(default=False)
     error: Mapped[str] = mapped_column(Text, default="")
 
 
@@ -473,6 +485,7 @@ def init_db(
             "safe_winner_id": "INTEGER",
             "safe_notification_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
             "safe_notification_error": "TEXT NOT NULL DEFAULT ''",
+            "safe_manager_error": "TEXT NOT NULL DEFAULT ''",
         }
         with engine.begin() as connection:
             for column, definition in additions.items():

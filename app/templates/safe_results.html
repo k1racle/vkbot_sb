@@ -3,6 +3,21 @@
   <h3>Участники сейфа <span class="badge">{{ safe_attempts|length }}</span></h3>
   <p>{{ 'Победитель подтверждён. Менеджеру нужно связаться с ним для получения бокса. Промокод победителю не выдаётся.' if campaign_form.safe_winner_id else 'Главный приз пока не подтверждён. Участник проверяет свой код кнопкой в сообщениях.' }}</p>
   {% if campaign_form.safe_notification_error %}<p class="error-cell">Приз закреплён, но сообщение о победе ещё не доставлено: {{ campaign_form.safe_notification_error }}. Участник может повторно нажать «Проверить код».</p>{% endif %}
+  {% if campaign_form.safe_winner_id %}
+  <h4>Оповещение менеджеров</h4>
+  <p class="hint">Получатели задаются в разделе <a href="{{ prefix }}/admin?section=chat">«Общение → ID менеджеров VK»</a>. Каждый менеджер должен разрешить сообщения сообщества.</p>
+  {% if campaign_form.safe_manager_error %}<p class="error-cell">{{ campaign_form.safe_manager_error }}</p>{% endif %}
+  {% for n in safe_manager_notifications %}
+    <p><a href="https://vk.com/id{{ n.manager_id }}" target="_blank" rel="noopener">Менеджер {{ n.manager_id }}</a>: {{ 'Уведомление отправлено' if n.sent else 'Уведомление не отправлено' }}{% if n.error %} <span class="error-cell">{{ n.error }}</span>{% endif %}</p>
+  {% else %}<p>Уведомления менеджерам ещё не отправлены.</p>{% endfor %}
+  {% if campaign_form.enabled %}
+  <form method="post" action="{{ prefix }}/admin/campaigns/{{ campaign_form.id }}/notify-safe-managers">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <button class="btn secondary" type="submit">Оповестить менеджеров</button>
+    <span class="hint">Уже доставленные уведомления повторно не отправляются.</span>
+  </form>
+  {% endif %}
+  {% endif %}
   <div class="table-wrap"><table><thead><tr><th>Комментарий</th><th>Время (Москва)</th><th>Участник</th><th>Первый код</th><th>Результат</th><th>Бонус</th><th>Доставка</th></tr></thead><tbody>
   {% for a in safe_attempts %}<tr>
     <td><a href="https://vk.com/wall-{{ request.state.project.group_id }}_{{ campaign_form.post_id }}?reply={{ a.comment_id }}" target="_blank" rel="noopener">#{{ a.comment_id }}</a></td>

@@ -33,6 +33,7 @@ from .db import (
     PendingGift,
     ProcessedComment,
     SafeAttempt,
+    SafeManagerNotification,
     SessionLocal,
     already_processed,
     read_settings,
@@ -258,6 +259,14 @@ async def admin_page(
             if selected_campaign and selected_campaign.delivery_mode == "safe"
             else []
         )
+        safe_manager_notifications = (
+            session.query(SafeManagerNotification)
+            .filter_by(campaign_id=selected_campaign.id)
+            .order_by(SafeManagerNotification.manager_id)
+            .all()
+            if selected_campaign and selected_campaign.delivery_mode == "safe"
+            else []
+        )
     form = {
         "chat_url": values.get("chat_url", ""),
         "video_mention_post_id": values.get("video_mention_post_id", ""),
@@ -303,6 +312,9 @@ async def admin_page(
         "safe_notification_sent": selected_campaign.safe_notification_sent
         if selected_campaign
         else False,
+        "safe_manager_error": selected_campaign.safe_manager_error
+        if selected_campaign
+        else "",
         "id": selected_campaign.id if selected_campaign else "",
         "post_id": (selected_campaign.post_id or "") if selected_campaign else "",
         "title": selected_campaign.title if selected_campaign else "",
@@ -340,6 +352,7 @@ async def admin_page(
             "form": form,
             "campaign_form": campaign_form,
             "safe_attempts": safe_attempts,
+            "safe_manager_notifications": safe_manager_notifications,
             "invitation_defaults": {
                 "gift": DEFAULT_INVITATIONS,
                 "chat": DEFAULT_CHAT_INVITATIONS,
@@ -758,6 +771,20 @@ async def retry_safe_invitation(request: Request, attempt_id: int):
             raise HTTPException(404, "Попытка сейфа не найдена")
         campaign_id = campaign.id
     await safes.send_invitation(attempt_id)
+    return RedirectResponse(
+        f"/admin?section=campaigns&campaign_id={campaign_id}", status_code=303
+    )
+
+
+@app.post("/admin/campaigns/{campaign_id}/notify-safe-managers")
+async def notify_safe_managers(request: Request, campaign_id: int):
+    if not admin_required(request):
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    with SessionLocal() as session:
+        campaign = session.get(Campaign, campaign_id)
+        if not campaign or campaign.is_deleted or campaign.delivery_mode != "safe":
+            raise HTTPException(404, "Кампания сейфа не найдена")
+    await safes.notify_winner_managers(campaign_id)
     return RedirectResponse(
         f"/admin?section=campaigns&campaign_id={campaign_id}", status_code=303
     )
