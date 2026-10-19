@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
@@ -617,6 +618,162 @@ def test_admin_create_validation_and_immutable_rules(comments):
     assert "campaign_error=safe_locked" in str(result.url)
     with sessions() as session:
         assert session.query(db.Campaign).one().safe_code == "0047"
+
+
+@pytest.fixture
+def editable_game(game):
+    client, sessions, ident, instant = game
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        # Admin dates have minute precision, as in a campaign created by the form.
+        campaign.safe_start_at = campaign.safe_start_at.replace(second=0)
+        campaign.safe_end_at = campaign.safe_end_at.replace(second=0)
+        data = fields(
+            campaign_id=str(ident),
+            delivery_mode="safe",
+            safe_code=campaign.safe_code,
+            safe_start_at=safes.local_date(campaign.safe_start_at),
+            safe_end_at=safes.local_date(campaign.safe_end_at),
+        )
+        data.update(
+            title=campaign.title,
+            post_id=str(campaign.post_id),
+            promo_code=campaign.promo_code,
+            promo_message=campaign.promo_message,
+        )
+        session.commit()
+    login(client)
+    return client, sessions, ident, instant, data
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_admin_extend_safe_preserves_attempts_and_accepts_new_codes(
+    editable_game, monkeypatch, expired
+):
+    client, sessions, ident, instant, data = editable_game
+    old_end = safes.parse_date(data["safe_end_at"])
+    extended_time = old_end + timedelta(minutes=5)
+    client.post("/vk/callback", json=entry(instant, "1234"))
+    check(client, sessions)
+    with sessions() as session:
+        first_id = session.query(db.SafeAttempt).one().id
+        bonus_payload = session.get(db.SafeAttempt, first_id).bonus_payload
+
+    if expired:
+        monkeypatch.setattr(safes, "now", lambda: extended_time)
+        client.post("/vk/callback", json=entry(extended_time, user=88, number=2))
+        with sessions() as session:
+            assert session.query(db.SafeAttempt).count() == 1
+    with sessions() as session:
+        revision = session.get(db.Campaign, ident).safe_revision
+    data["safe_end_at"] = safes.local_date(old_end + timedelta(days=1))
+    response = client.post("/admin/campaigns", data=data)
+    assert "campaign_saved=1" in str(response.url)
+    with sessions() as session:
+        campaign = session.query(db.Campaign).one()
+        assert campaign.id == ident and campaign.enabled and campaign.safe_locked
+        assert campaign.safe_start_at == safes.parse_date(data["safe_start_at"])
+        assert campaign.safe_end_at == old_end + timedelta(days=1)
+        assert campaign.safe_revision == revision + 1
+        assert campaign.safe_winner_id is None
+        first = session.query(db.SafeAttempt).one()
+        assert first.id == first_id and first.code == "1234" and first.bonus_sent
+        assert first.bonus_payload == bonus_payload
+        assert session.query(db.PromoDelivery).count() == 1
+
+    monkeypatch.setattr(safes, "now", lambda: extended_time)
+    # An existing participant cannot replace their first code after extension.
+    client.post("/vk/callback", json=entry(extended_time, number=3))
+    check(client, sessions, number=11)
+    client.post("/vk/callback", json=entry(extended_time, user=88, number=4))
+    check(client, sessions, user=88, number=12)
+    # The updated end is still exclusive.
+    client.post(
+        "/vk/callback",
+        json=entry(old_end + timedelta(days=1), user=100, number=5),
+    )
+    with sessions() as session:
+        assert session.query(db.SafeAttempt).count() == 2
+        first = session.get(db.SafeAttempt, first_id)
+        assert first.comment_id == 1 and first.code == "1234"
+        winner = session.get(
+            db.SafeAttempt, session.get(db.Campaign, ident).safe_winner_id
+        )
+        assert winner.user_id == 88 and winner.comment_id == 4
+        assert session.query(db.PromoDelivery).one().user_id == 77
+
+
+def test_repeated_extension_preserves_winner_and_manager_notification(editable_game):
+    client, sessions, ident, instant, data = editable_game
+    managers(sessions, "99")
+    client.post("/vk/callback", json=entry(instant))
+    check(client, sessions)
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        winner_id, finalized_at = campaign.safe_winner_id, campaign.safe_finalized_at
+        notification = session.get(db.SafeManagerNotification, (ident, 99)).message
+    old_end = safes.parse_date(data["safe_end_at"])
+    vk_api.send_message.reset_mock()
+    for days in (1, 2):
+        data["safe_end_at"] = safes.local_date(old_end + timedelta(days=days))
+        response = client.post("/admin/campaigns", data=data)
+        assert "campaign_saved=1" in str(response.url)
+    vk_api.send_message.assert_not_called()
+    client.post(
+        "/vk/callback", json=entry(old_end + timedelta(days=1), user=88, number=2)
+    )
+    check(client, sessions, user=88)
+    check(client, sessions, number=11)
+    assert all(call.args[0] != 99 for call in vk_api.send_message.call_args_list)
+    with sessions() as session:
+        campaign = session.get(db.Campaign, ident)
+        assert campaign.safe_winner_id == winner_id
+        assert campaign.safe_finalized_at == finalized_at
+        assert campaign.safe_notification_sent
+        notice = session.query(db.SafeManagerNotification).one()
+        assert notice.sent and notice.message == notification
+        assert session.query(db.PromoDelivery).one().user_id == 88
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_safe_end_is_editable_and_unchanged_date_can_be_saved(editable_game, paused):
+    client, sessions, ident, _, data = editable_game
+    if paused:
+        data["enabled"] = ""
+        with sessions() as session:
+            session.get(db.Campaign, ident).enabled = False
+            session.commit()
+    page = client.get(f"/admin?section=campaigns&campaign_id={ident}")
+    end_input = re.search(r'<input[^>]+name="safe_end_at"[^>]*>', page.text)[0]
+    assert "readonly" not in end_input and "disabled" not in end_input
+    assert f'min="{data["safe_end_at"]}"' in end_input
+    start_input = re.search(r'<input[^>]+name="safe_start_at"[^>]*>', page.text)[0]
+    assert "readonly" in start_input
+    for extra_days in (0, 1):
+        data["safe_end_at"] = safes.local_date(
+            safes.parse_date(data["safe_end_at"]) + timedelta(days=extra_days)
+        )
+        response = client.post("/admin/campaigns", data=data)
+        assert "campaign_saved=1" in str(response.url)
+        with sessions() as session:
+            campaign = session.get(db.Campaign, ident)
+            assert campaign.enabled is not paused
+            assert campaign.safe_end_at == safes.parse_date(data["safe_end_at"])
+
+
+@pytest.mark.parametrize(
+    "field,error",
+    [("safe_start_at", "safe_locked"), ("safe_end_at", "safe_end_earlier")],
+)
+def test_started_safe_rejects_start_change_and_shorter_end(editable_game, field, error):
+    client, sessions, ident, _, data = editable_game
+    original = safes.parse_date(data[field])
+    data[field] = safes.local_date(original - timedelta(minutes=1))
+    response = client.post("/admin/campaigns", data=data)
+    assert f"campaign_error={error}" in str(response.url)
+    assert f"campaign_id={ident}" in str(response.url)
+    with sessions() as session:
+        assert getattr(session.get(db.Campaign, ident), field) == original
 
 
 @pytest.mark.parametrize(

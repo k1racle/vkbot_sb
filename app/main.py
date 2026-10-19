@@ -585,12 +585,16 @@ async def save_campaign(
                 or post_id != campaign.post_id
                 or safe_code != campaign.safe_code
                 or start_at != campaign.safe_start_at
-                or end_at != campaign.safe_end_at
                 or safe_texts != safes.messages(campaign)
             )
         ):
             return RedirectResponse(
                 f"/admin?section=campaigns&campaign_id={campaign.id}&campaign_error=safe_locked",
+                status_code=303,
+            )
+        if campaign and campaign.safe_locked and end_at < campaign.safe_end_at:
+            return RedirectResponse(
+                f"/admin?section=campaigns&campaign_id={campaign.id}&campaign_error=safe_end_earlier",
                 status_code=303,
             )
         if delivery_mode == "safe" and (not campaign or not campaign.safe_locked):
